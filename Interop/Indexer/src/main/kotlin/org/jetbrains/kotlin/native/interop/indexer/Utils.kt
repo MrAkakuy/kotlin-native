@@ -46,6 +46,13 @@ internal fun CPointer<CXStringSet>.convertAndDispose(): Set<String> = try {
     clang_disposeStringSet(this)
 }
 
+internal fun CPointer<CPointerVar<CXIdxBaseClassInfo>>.convertAndDispose(
+        size: Int
+): List<CXIdxBaseClassInfo> =
+    (0 until size).mapTo(mutableListOf()) {
+        this[it]!!.pointed
+    }
+
 internal fun getCursorSpelling(cursor: CValue<CXCursor>) =
         clang_getCursorSpelling(cursor).convertAndDispose()
 

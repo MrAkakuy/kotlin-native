@@ -21,7 +21,13 @@ import clang.CXIdxEntityKind.*
 import clang.CXTypeKind.*
 import kotlinx.cinterop.*
 
-private class StructDeclImpl(spelling: String, override val location: Location) : StructDecl(spelling) {
+private class StructDeclImpl(
+        spelling: String,
+        override val location: Location,
+        override val bases: List<StructDecl>
+) : StructDecl(
+        spelling
+) {
     override var def: StructDefImpl? = null
 }
 
@@ -175,8 +181,8 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
     }
 
     private fun getStructDeclAt(
-            cursor: CValue<CXCursor>
-    ): StructDeclImpl = structRegistry.getOrPut(cursor, { createStructDecl(cursor) }) { decl ->
+            cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null
+    ): StructDeclImpl = structRegistry.getOrPut(cursor, { createStructDecl(cursor, info) }) { decl ->
         val definitionCursor = clang_getCursorDefinition(cursor)
         if (clang_Cursor_isNull(definitionCursor) == 0) {
             assert(clang_isCursorDefinition(definitionCursor) != 0)
@@ -184,11 +190,23 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
-    private fun createStructDecl(cursor: CValue<CXCursor>): StructDeclImpl {
+    private fun createStructDecl(cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null): StructDeclImpl {
         val cursorType = clang_getCursorType(cursor)
         val typeSpelling = clang_getTypeSpelling(cursorType).convertAndDispose()
 
-        return StructDeclImpl(typeSpelling, getLocation(cursor))
+        val bases: List<StructDecl> = info?.let {
+            memScoped {
+                clang_index_getCXXClassDeclInfo(it.ptr)?.pointed?.let {
+                    it.bases?.convertAndDispose(it.numBases)?.map {
+                        val baseType = clang_getCursorType(it.cursor.readValue())
+                        val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
+                        structRegistry.included.find { it.spelling == baseSpelling }!!
+                    } ?: listOf()
+                } ?: listOf()
+            }
+        } ?: listOf()
+
+        return StructDeclImpl(typeSpelling, getLocation(cursor), bases)
     }
 
     private fun createStructDef(structDecl: StructDeclImpl, cursor: CValue<CXCursor>) {
@@ -205,6 +223,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 when (cursor.kind) {
                     CXCursorKind.CXCursor_UnionDecl -> StructDef.Kind.UNION
                     CXCursorKind.CXCursor_StructDecl -> StructDef.Kind.STRUCT
+                    CXCursorKind.CXCursor_ClassDecl -> StructDef.Kind.CLASS
                     else -> error(cursor.kind)
                 }
         )
@@ -465,7 +484,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
             convertType(clang_getCursorType(cursor), clang_getDeclTypeAttributes(cursor))
 
     private inline fun objCType(supplier: () -> ObjCPointer) = when (library.language) {
-        Language.C -> UnsupportedType
+        Language.C, Language.CPP -> UnsupportedType
         Language.OBJECTIVE_C -> supplier()
     }
 
@@ -753,13 +772,17 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
 
         when (kind) {
-            CXIdxEntity_Struct, CXIdxEntity_Union -> {
+            CXIdxEntity_Struct, CXIdxEntity_Union, CXIdxEntity_CXXClass -> {
                 if (entityName == null) {
                     // Skip anonymous struct.
                     // (It gets included anyway if used as a named field type).
                 } else {
-                    getStructDeclAt(cursor)
+                    getStructDeclAt(cursor, info)
                 }
+            }
+
+            CXIdxEntity_CXXInstanceMethod -> {
+                // TODO: methods
             }
 
             CXIdxEntity_Typedef -> {
@@ -857,7 +880,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val parameters = getFunctionParameters(cursor)
 
         val binaryName = when (library.language) {
-            Language.C, Language.OBJECTIVE_C -> clang_Cursor_getMangling(cursor).convertAndDispose()
+            Language.C, Language.OBJECTIVE_C, Language.CPP -> clang_Cursor_getMangling(cursor).convertAndDispose()
         }
 
         val definitionCursor = clang_getCursorDefinition(cursor)

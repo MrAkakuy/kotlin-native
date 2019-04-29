@@ -112,7 +112,7 @@ private fun reparseWithCodeSnippet(library: NativeLibrary,
         // so the code pattern should force the constant evaluation that corresponds to language rules.
         val codeSnippetLines = when (library.language) {
             // Note: __auto_type is a GNU extension which is supported by clang.
-            Language.C, Language.OBJECTIVE_C -> listOf(
+            Language.C, Language.OBJECTIVE_C, Language.CPP -> listOf(
                     "void kni_indexer_function() { __auto_type KNI_INDEXER_VARIABLE = $name; }"
             )
         }

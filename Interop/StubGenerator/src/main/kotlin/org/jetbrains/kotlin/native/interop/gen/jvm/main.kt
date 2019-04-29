@@ -85,7 +85,8 @@ private fun Properties.putAndRunOnReplace(key: Any, newValue: Any, beforeReplace
 private fun selectNativeLanguage(config: DefFile.DefFileConfig): Language {
     val languages = mapOf(
             "C" to Language.C,
-            "Objective-C" to Language.OBJECTIVE_C
+            "Objective-C" to Language.OBJECTIVE_C,
+            "C++" to Language.CPP
     )
 
     val language = config.language ?: return Language.C
@@ -196,7 +197,10 @@ private fun processCLib(args: Array<String>, additionalArgs: Map<String, Any> = 
             additionalLinkerOpts
     val linkerName = argParser.get<String>("linker") ?: def.config.linker
     val linker = "${tool.llvmHome}/bin/$linkerName"
-    val compiler = "${tool.llvmHome}/bin/clang"
+    val compiler = when (language) {
+        Language.C, Language.OBJECTIVE_C -> "${tool.llvmHome}/bin/clang"
+        Language.CPP -> "${tool.llvmHome}/bin/clang++"
+    }
     val excludedFunctions = def.config.excludedFunctions.toSet()
     val excludedMacros = def.config.excludedMacros.toSet()
     val staticLibraries = def.config.staticLibraries + argParser.getValuesAsArray("staticLibrary")
@@ -325,6 +329,7 @@ internal fun buildNativeLibrary(
                 // 2. The generated Objective-C stubs are compiled with ARC enabled, so reference counting
                 // calls are inserted automatically.
             }
+            Language.CPP -> emptyList()
         })
     }
 

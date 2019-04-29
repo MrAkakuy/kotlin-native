@@ -358,6 +358,8 @@ class StubGenerator(
             if (def.kind == StructDef.Kind.STRUCT && def.fieldsHaveDefaultAlignment()) {
                 out("@CNaturalStruct(${def.members.joinToString { it.name.quoteAsKotlinLiteral() }})")
             }
+            // TODO: struct -> class
+            // wha happen here
         } else {
             tryRenderStructOrUnion(def)?.let {
                 out("@CStruct".applyToStrings(it))
@@ -366,7 +368,9 @@ class StubGenerator(
 
         val kotlinName = kotlinFile.declare(declarationMapper.getKotlinClassForPointed(decl))
 
-        block("class $kotlinName(rawPtr: NativePtr) : CStructVar(rawPtr)") {
+        val base = if (decl.bases.isEmpty()) "CStructVar" else decl.bases.first().spelling
+
+        block("open class $kotlinName(rawPtr: NativePtr) : $base(rawPtr)") {
             out("")
             out("companion object : Type(${def.size}, ${def.align})") // FIXME: align
             out("")
@@ -443,7 +447,7 @@ class StubGenerator(
     /**
      * Produces to [out] the definition of Kotlin class representing the reference to given forward (incomplete) struct.
      */
-    private fun generateForwardStruct(s: StructDecl) = when (platform) {
+    private fun generateForwardStruct(s: StructDecl) = when (platform) { // TODO: CPP bases
         KotlinPlatform.JVM -> out("class ${s.kotlinName.asSimpleName()}(rawPtr: NativePtr) : COpaque(rawPtr)")
         KotlinPlatform.NATIVE -> {}
     }
@@ -964,6 +968,7 @@ class StubGenerator(
                     when (configuration.library.language) {
                         Language.C -> emptyList()
                         Language.OBJECTIVE_C -> listOf("void objc_terminate();")
+                        Language.CPP -> emptyList()
                     }
     )
 

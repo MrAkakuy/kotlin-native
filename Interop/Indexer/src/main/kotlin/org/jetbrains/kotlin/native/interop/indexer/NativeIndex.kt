@@ -18,7 +18,8 @@ package org.jetbrains.kotlin.native.interop.indexer
 
 enum class Language(val sourceFileExtension: String) {
     C("c"),
-    OBJECTIVE_C("m")
+    OBJECTIVE_C("m"),
+    CPP("cpp")
 }
 
 interface HeaderInclusionPolicy {
@@ -127,6 +128,7 @@ class IncompleteField(name: String, type: Type) : StructMember(name, type) {
  */
 abstract class StructDecl(val spelling: String) : TypeDeclaration {
 
+    abstract val bases: List<StructDecl>
     abstract val def: StructDef?
 }
 
@@ -139,7 +141,7 @@ abstract class StructDecl(val spelling: String) : TypeDeclaration {
 abstract class StructDef(val size: Long, val align: Int, val decl: StructDecl) {
 
     enum class Kind {
-        STRUCT, UNION
+        STRUCT, UNION, CLASS
     }
 
     abstract val members: List<StructMember>
