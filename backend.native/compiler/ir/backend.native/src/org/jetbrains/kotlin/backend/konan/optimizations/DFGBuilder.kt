@@ -7,6 +7,7 @@ package org.jetbrains.kotlin.backend.konan.optimizations
 
 import org.jetbrains.kotlin.backend.common.atMostOne
 import org.jetbrains.kotlin.backend.common.ir.ir2stringWhole
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.peek
 import org.jetbrains.kotlin.backend.common.pop
 import org.jetbrains.kotlin.backend.common.push
@@ -25,6 +26,9 @@ import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrTypeParameterSymbol
 import org.jetbrains.kotlin.ir.types.*
 import org.jetbrains.kotlin.ir.util.*
+import org.jetbrains.kotlin.ir.util.constructors
+import org.jetbrains.kotlin.ir.util.getArguments
+import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.visitors.IrElementVisitorVoid
 import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
 import org.jetbrains.kotlin.ir.visitors.acceptVoid
@@ -557,6 +561,17 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                     else symbolTable.mapFunction(value.symbol.owner.constructors.single())
                             )
 
+                            is IrConstructorCall -> {
+                                val callee = value.symbol.owner
+                                val arguments = value.getArguments().map { expressionToEdge(it.second) }
+                                DataFlowIR.Node.NewObject(
+                                        symbolTable.mapFunction(callee),
+                                        arguments,
+                                        symbolTable.mapClassReferenceType(callee.constructedClass, false),
+                                        value
+                                )
+                            }
+
                             is IrCall -> when (value.symbol) {
                                 getContinuationSymbol -> getContinuation()
 
@@ -573,9 +588,9 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
 
                                 initInstanceSymbol -> {
                                     val thiz = expressionToEdge(value.getValueArgument(0)!!)
-                                    val initializer = value.getValueArgument(1) as IrCall
+                                    val initializer = value.getValueArgument(1) as IrConstructorCall
                                     val arguments = listOf(thiz) + initializer.getArguments().map { expressionToEdge(it.second) }
-                                    val callee = initializer.symbol.owner as IrConstructor
+                                    val callee = initializer.symbol.owner
                                     DataFlowIR.Node.StaticCall(
                                             symbolTable.mapFunction(callee),
                                             arguments,
@@ -595,12 +610,7 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                                     it
                                             }
                                     if (callee is IrConstructor) {
-                                        DataFlowIR.Node.NewObject(
-                                                symbolTable.mapFunction(callee),
-                                                arguments,
-                                                symbolTable.mapClassReferenceType(callee.constructedClass, false),
-                                                value
-                                        )
+                                        error("Constructor call should be done with IrConstructorCall")
                                     } else {
                                         callee as IrSimpleFunction
                                         if (callee.isOverridable && value.superQualifier == null) {

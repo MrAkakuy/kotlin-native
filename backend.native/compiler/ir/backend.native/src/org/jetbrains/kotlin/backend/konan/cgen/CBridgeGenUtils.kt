@@ -2,6 +2,7 @@ package org.jetbrains.kotlin.backend.konan.cgen
 
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedValueParameterDescriptor
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.lower.irBlock
 import org.jetbrains.kotlin.backend.common.lower.irThrow
 import org.jetbrains.kotlin.backend.konan.descriptors.createAnnotation
@@ -16,6 +17,8 @@ import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrValueParameterImpl
 import org.jetbrains.kotlin.ir.expressions.IrCall
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.IrMemberAccessExpression
+import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrValueParameterSymbolImpl
@@ -128,8 +131,9 @@ private fun createKotlinBridge(
     )
     bridgeDescriptor.bind(bridge)
     if (isExternal) {
+        val constructor = symbols.filterExceptions.owner.constructors.single()
         bridge.annotations +=
-                irCall(startOffset, endOffset, symbols.filterExceptions.owner.constructors.single(), emptyList())
+                IrConstructorCallImpl.fromSymbolOwner(startOffset, endOffset, constructor.returnType, constructor.symbol)
     }
     return bridge
 }
@@ -185,7 +189,7 @@ internal class KotlinCallBuilder(private val irBuilder: IrBuilderWithScope, priv
 
     fun build(
             function: IrFunction,
-            transformCall: (IrCall) -> IrExpression = { it }
+            transformCall: (IrMemberAccessExpression) -> IrExpression = { it }
     ): IrExpression {
         val arguments = this.arguments.toMutableList()
 
