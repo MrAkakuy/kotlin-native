@@ -5,7 +5,7 @@ import org.jetbrains.kotlin.native.interop.indexer.*
 fun tryRenderStructOrUnion(def: StructDef): String? = when (def.kind) {
     StructDef.Kind.STRUCT -> tryRenderStruct(def)
     StructDef.Kind.UNION -> tryRenderUnion(def)
-    StructDef.Kind.CLASS -> tryRenderClass(def)
+    StructDef.Kind.CLASS -> tryRenderStruct(def)
 }
 
 private fun tryRenderStruct(def: StructDef): String? {
@@ -62,39 +62,6 @@ private fun tryRenderUnion(def: StructDef): String? =
             append("}")
 
         }
-
-private fun tryRenderClass(def: StructDef): String? { // TODO: struct -> class
-    val isPackedStruct = def.fields.any { !it.isAligned }
-
-    var offset = 0L
-
-    return buildString {
-        append("class")
-        if (isPackedStruct) append(" __attribute__((packed))")
-        append(" { ")
-
-        def.members.forEachIndexed { index, it ->
-            val name = "p$index"
-            val decl = when (it) {
-                is Field -> {
-                    val defaultAlignment = if (isPackedStruct) 1L else it.typeAlign
-                    val alignment = guessAlignment(offset, it.offsetBytes, defaultAlignment) ?: return null
-
-                    offset = it.offsetBytes + it.typeSize
-
-                    tryRenderVar(it.type, name)
-                            ?.plus(if (alignment == defaultAlignment) "" else "__attribute__((aligned($alignment)))")
-                }
-
-                is BitField, // TODO: tryRenderVar(it.type, name)?.plus(" : ${it.size}")
-                is IncompleteField -> null // e.g. flexible array member.
-            } ?: return null
-            append("$decl; ")
-        }
-
-        append("}")
-    }
-}
 
 private fun tryRenderVar(type: Type, name: String): String? = when (type) {
     CharType, is BoolType -> "char $name"

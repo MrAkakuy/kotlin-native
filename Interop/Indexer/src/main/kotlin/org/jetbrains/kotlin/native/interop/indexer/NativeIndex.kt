@@ -109,7 +109,7 @@ sealed class StructMember(val name: String, val type: Type) {
 }
 
 /**
- * C struct field.
+ * C/C++ struct/class field.
  */
 class Field(name: String, type: Type, override val offset: Long, val typeSize: Long, val typeAlign: Long)
     : StructMember(name, type)
@@ -124,7 +124,7 @@ class IncompleteField(name: String, type: Type) : StructMember(name, type) {
 }
 
 /**
- * C struct declaration.
+ * C/C++ struct/class declaration.
  */
 abstract class StructDecl(val spelling: String) : TypeDeclaration {
 
@@ -133,7 +133,7 @@ abstract class StructDecl(val spelling: String) : TypeDeclaration {
 }
 
 /**
- * C struct definition.
+ * C/C++ struct/class definition.
  *
  * @param hasNaturalLayout must be `false` if the struct has unnatural layout, e.g. it is `packed`.
  * May be `false` even if the struct has natural layout.
@@ -145,6 +145,7 @@ abstract class StructDef(val size: Long, val align: Int, val decl: StructDecl) {
     }
 
     abstract val members: List<StructMember>
+    abstract val methods: List<FunctionDecl>
     abstract val kind: Kind
 
     val fields: List<Field> get() = members.filterIsInstance<Field>()
@@ -210,10 +211,12 @@ abstract class ObjCCategory(val name: String, val clazz: ObjCClass) : ObjCContai
 data class Parameter(val name: String?, val type: Type, val nsConsumed: Boolean)
 
 /**
- * C function declaration.
+ * C/C++ function declaration.
  */
 class FunctionDecl(val name: String, val parameters: List<Parameter>, val returnType: Type, val binaryName: String,
-                   val isDefined: Boolean, val isVararg: Boolean)
+                   val isDefined: Boolean, val isVararg: Boolean,
+                   val owner: RecordType? = null, val isStatic: Boolean = false,
+                   val isVirtual: Boolean = false, val isPureVirtual: Boolean = false)
 
 /**
  * C typedef definition.

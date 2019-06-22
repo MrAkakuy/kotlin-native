@@ -104,8 +104,8 @@ class StubGenerator(
      * Indicates whether this enum should be represented as Kotlin enum.
      */
     val EnumDef.isStrictEnum: Boolean
-            // TODO: if an anonymous enum defines e.g. a function return value or struct field type,
-            // then it probably should be represented as Kotlin enum
+        // TODO: if an anonymous enum defines e.g. a function return value or struct field type,
+        // then it probably should be represented as Kotlin enum
         get() {
             if (this.isAnonymous) {
                 return false
@@ -347,90 +347,116 @@ class StubGenerator(
     /**
      * Produces to [out] the definition of Kotlin class representing the reference to given struct.
      */
-    private fun generateStruct(decl: StructDecl) {
-        val def = decl.def
-        if (def == null) {
-            generateForwardStruct(decl)
-            return
+    private inner class KotlinStructStub(val decl: StructDecl) : KotlinStub {
+        override fun generate(context: StubGenerationContext): Sequence<String> =
+                if (lines.isEmpty())
+                    sequenceOf()
+                else if (methods.isEmpty())
+                    lines.asSequence()
+                else
+                    lines.asSequence() + methods.map { it.generate(context).map { "    $it" } }.asSequence().flatten() + "}"
+
+        private val lines: List<String>
+        private val methods: List<KotlinStub>
+
+        init {
+            lines = mutableListOf()
+            withOutput({ lines.add(it) }) {
+                generateStruct()
+            }
+
+            methods = decl.def?.methods?.map { KotlinFunctionStub(it) } ?: listOf()
+            if (methods.isNotEmpty())
+                lines.removeAt(lines.size - 1) // Removing }
         }
 
-        if (platform == KotlinPlatform.JVM) {
-            if (def.kind == StructDef.Kind.STRUCT && def.fieldsHaveDefaultAlignment()) {
-                out("@CNaturalStruct(${def.members.joinToString { it.name.quoteAsKotlinLiteral() }})")
+        private fun generateStruct() {
+            val def = decl.def
+            if (def == null) {
+                generateForwardStruct(decl)
+                return
             }
-            // TODO: struct -> class
-            // wha happen here
-        } else {
-            tryRenderStructOrUnion(def)?.let {
-                out("@CStruct".applyToStrings(it))
-            }
-        }
 
-        val kotlinName = kotlinFile.declare(declarationMapper.getKotlinClassForPointed(decl))
-
-        val base = if (decl.bases.isEmpty()) "CStructVar" else decl.bases.first().spelling
-
-        block("open class $kotlinName(rawPtr: NativePtr) : $base(rawPtr)") {
-            out("")
-            out("companion object : Type(${def.size}, ${def.align})") // FIXME: align
-            out("")
-            for (field in def.fields) {
-                try {
-                    assert(field.name.isNotEmpty())
-                    assert(field.offset % 8 == 0L)
-                    val offset = field.offset / 8
-                    val fieldRefType = mirror(field.type)
-                    val unwrappedFieldType = field.type.unwrapTypedefs()
-                    if (unwrappedFieldType is ArrayType) {
-                        val type = (fieldRefType as TypeMirror.ByValue).valueType.render(kotlinFile)
-
-                        if (platform == KotlinPlatform.JVM) {
-                            val length = getArrayLength(unwrappedFieldType)
-
-                            // TODO: @CLength should probably be used on types instead of properties.
-                            out("@CLength($length)")
-                        }
-
-                        out("val ${field.name.asSimpleName()}: $type")
-                        out("    get() = arrayMemberAt($offset)")
-                    } else {
-                        val pointedTypeName = fieldRefType.pointedType.render(kotlinFile)
-                        if (fieldRefType is TypeMirror.ByValue) {
-                            out("var ${field.name.asSimpleName()}: ${fieldRefType.argType.render(kotlinFile)}")
-                            out("    get() = memberAt<$pointedTypeName>($offset).value")
-                            out("    set(value) { memberAt<$pointedTypeName>($offset).value = value }")
-                        } else {
-                            out("val ${field.name.asSimpleName()}: $pointedTypeName")
-                            out("    get() = memberAt($offset)")
-                        }
-                    }
-                    out("")
-                } catch (e: Throwable) {
-                    log("Warning: cannot generate definition for field ${decl.kotlinName}.${field.name}")
+            if (platform == KotlinPlatform.JVM) {
+                if (def.kind != StructDef.Kind.UNION && def.fieldsHaveDefaultAlignment()) {
+                    out("@CNaturalStruct(${def.members.joinToString { it.name.quoteAsKotlinLiteral() }})")
+                }
+            } else {
+                tryRenderStructOrUnion(def)?.let {
+                    out("@CStruct".applyToStrings(it))
                 }
             }
 
-            if (platform == KotlinPlatform.NATIVE) {
-                for (field in def.bitFields) {
-                    val typeMirror = mirror(field.type)
-                    val typeInfo = typeMirror.info
-                    val kotlinType = typeMirror.argType.render(kotlinFile)
-                    val rawType = typeInfo.bridgedType
+            val kotlinName = kotlinFile.declare(declarationMapper.getKotlinClassForPointed(decl))
 
-                    out("var ${field.name.asSimpleName()}: $kotlinType")
+            val prefix = if (configuration.library.language == Language.CPP) {
+                "open "
+            } else ""
 
-                    val signed = field.type.isIntegerTypeSigned()
+            val base = if (decl.bases.isEmpty()) "CStructVar" else decl.bases.first().spelling
 
-                    val readBitsExpr =
-                            "readBits(this.rawPtr, ${field.offset}, ${field.size}, $signed).${rawType.convertor!!}()"
+            block("${prefix}class $kotlinName(rawPtr: NativePtr) : $base(rawPtr)") {
+                out("")
+                out("companion object : Type(${def.size}, ${def.align})") // FIXME: align
+                out("")
+                for (field in def.fields) {
+                    try {
+                        assert(field.name.isNotEmpty())
+                        assert(field.offset % 8 == 0L)
+                        val offset = field.offset / 8
+                        val fieldRefType = mirror(field.type)
+                        val unwrappedFieldType = field.type.unwrapTypedefs()
+                        if (unwrappedFieldType is ArrayType) {
+                            val type = (fieldRefType as TypeMirror.ByValue).valueType.render(kotlinFile)
 
-                    val getExpr = typeInfo.argFromBridged(readBitsExpr, kotlinFile, object : NativeBacked {})
-                    out("    get() = $getExpr")
+                            if (platform == KotlinPlatform.JVM) {
+                                val length = getArrayLength(unwrappedFieldType)
 
-                    val rawValue = typeInfo.argToBridged("value")
-                    val setExpr = "writeBits(this.rawPtr, ${field.offset}, ${field.size}, $rawValue.toLong())"
-                    out("    set(value) = $setExpr")
-                    out("")
+                                // TODO: @CLength should probably be used on types instead of properties.
+                                out("@CLength($length)")
+                            }
+
+                            out("val ${field.name.asSimpleName()}: $type")
+                            out("    get() = arrayMemberAt($offset)")
+                        } else {
+                            val pointedTypeName = fieldRefType.pointedType.render(kotlinFile)
+                            if (fieldRefType is TypeMirror.ByValue) {
+                                out("var ${field.name.asSimpleName()}: ${fieldRefType.argType.render(kotlinFile)}")
+                                out("    get() = memberAt<$pointedTypeName>($offset).value")
+                                out("    set(value) { memberAt<$pointedTypeName>($offset).value = value }")
+                            } else {
+                                out("val ${field.name.asSimpleName()}: $pointedTypeName")
+                                out("    get() = memberAt($offset)")
+                            }
+                        }
+                        out("")
+                    } catch (e: Throwable) {
+                        log("Warning: cannot generate definition for field ${decl.kotlinName}.${field.name}")
+                    }
+                }
+
+                if (platform == KotlinPlatform.NATIVE) {
+                    for (field in def.bitFields) {
+                        val typeMirror = mirror(field.type)
+                        val typeInfo = typeMirror.info
+                        val kotlinType = typeMirror.argType.render(kotlinFile)
+                        val rawType = typeInfo.bridgedType
+
+                        out("var ${field.name.asSimpleName()}: $kotlinType")
+
+                        val signed = field.type.isIntegerTypeSigned()
+
+                        val readBitsExpr =
+                                "readBits(this.rawPtr, ${field.offset}, ${field.size}, $signed).${rawType.convertor!!}()"
+
+                        val getExpr = typeInfo.argFromBridged(readBitsExpr, kotlinFile, object : NativeBacked {})
+                        out("    get() = $getExpr")
+
+                        val rawValue = typeInfo.argToBridged("value")
+                        val setExpr = "writeBits(this.rawPtr, ${field.offset}, ${field.size}, $rawValue.toLong())"
+                        out("    set(value) = $setExpr")
+                        out("")
+                    }
                 }
             }
         }
@@ -620,6 +646,12 @@ class StubGenerator(
             val bodyGenerator = KotlinCodeBuilder(scope = kotlinFile)
             val bridgeArguments = mutableListOf<TypedKotlinValue>()
 
+            val owner = func.owner
+            if (owner != null) {
+                bodyGenerator.pushMemScoped()
+                bridgeArguments.add(TypedKotlinValue(PointerType(owner), "this@${owner.decl.kotlinName}.ptr"))
+            }
+
             func.parameters.forEachIndexed { index, parameter ->
                 val parameterName = parameter.name.let {
                     if (it == null || it.isEmpty()) {
@@ -667,7 +699,10 @@ class StubGenerator(
                         bridgeArguments,
                         independent = false
                 ) { nativeValues ->
-                    "${func.name}(${nativeValues.joinToString()})"
+                    if (owner != null)
+                        "(${nativeValues.first()})->${func.name}(${nativeValues.drop(1).joinToString()})"
+                    else
+                        "${func.name}(${nativeValues.joinToString()})"
                 }
                 bodyGenerator.returnResult(result)
                 isCCall = false
@@ -844,7 +879,7 @@ class StubGenerator(
         nativeIndex.structs.forEach { s ->
             try {
                 stubs.add(
-                    generateKotlinFragmentBy { generateStruct(s) }
+                        KotlinStructStub(s)
                 )
             } catch (e: Throwable) {
                 log("Warning: cannot generate definition for struct ${s.kotlinName}")
@@ -983,10 +1018,20 @@ class StubGenerator(
 
         out("// NOTE THIS FILE IS AUTO-GENERATED")
         out("")
+        out("#ifdef __cplusplus")
+        out("extern \"C\" {")
+        out("#endif")
+        out("")
 
         bridges.nativeLines.forEach {
             out(it)
         }
+
+        out("")
+        out("#ifdef __cplusplus")
+        out("}")
+        out("#endif")
+        out("")
 
         if (entryPoint != null) {
             out("extern int Konan_main(int argc, char** argv);")

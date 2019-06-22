@@ -38,6 +38,7 @@ private class StructDefImpl(
         size, align, decl
 ) {
     override val members = mutableListOf<StructMember>()
+    override val methods = mutableListOf<FunctionDecl>()
 }
 
 private class EnumDefImpl(spelling: String, type: Type, override val location: Location) : EnumDef(spelling, type) {
@@ -195,15 +196,13 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val typeSpelling = clang_getTypeSpelling(cursorType).convertAndDispose()
 
         val bases: List<StructDecl> = info?.let {
-            memScoped {
-                clang_index_getCXXClassDeclInfo(it.ptr)?.pointed?.let {
-                    it.bases?.convertAndDispose(it.numBases)?.map {
-                        val baseType = clang_getCursorType(it.cursor.readValue())
-                        val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
-                        structRegistry.included.find { it.spelling == baseSpelling }!!
-                    } ?: listOf()
+            clang_index_getCXXClassDeclInfo(it.ptr)?.pointed?.let {
+                it.bases?.convertAndDispose(it.numBases)?.map {
+                    val baseType = clang_getCursorType(it.cursor.readValue())
+                    val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
+                    structRegistry.included.find { it.spelling == baseSpelling }!!
                 } ?: listOf()
-            }
+            } ?: listOf()
         } ?: listOf()
 
         return StructDeclImpl(typeSpelling, getLocation(cursor), bases)
@@ -782,7 +781,8 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
             }
 
             CXIdxEntity_CXXInstanceMethod -> {
-                // TODO: methods
+                val owner = getStructDeclAt(info.semanticContainer!!.pointed.cursor.readValue())
+                owner.def?.methods?.add(getFunction(cursor, owner))
             }
 
             CXIdxEntity_Typedef -> {
@@ -873,7 +873,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
-    private fun getFunction(cursor: CValue<CXCursor>): FunctionDecl {
+    private fun getFunction(cursor: CValue<CXCursor>, owner: StructDecl? = null): FunctionDecl {
         val name = clang_getCursorSpelling(cursor).convertAndDispose()
         val returnType = convertType(clang_getCursorResultType(cursor), clang_getCursorResultTypeAttributes(cursor))
 
@@ -885,10 +885,11 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
         val definitionCursor = clang_getCursorDefinition(cursor)
         val isDefined = (clang_Cursor_isNull(definitionCursor) == 0)
-
         val isVararg = clang_Cursor_isVariadic(cursor) != 0
 
-        return FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg)
+        return owner?.let {
+            FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg, RecordType(it))
+        } ?: FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg)
     }
 
     private fun getObjCMethod(cursor: CValue<CXCursor>): ObjCMethod? {
