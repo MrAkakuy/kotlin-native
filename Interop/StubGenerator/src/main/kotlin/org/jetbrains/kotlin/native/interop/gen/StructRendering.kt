@@ -70,6 +70,7 @@ private fun tryRenderVar(type: Type, name: String): String? = when (type) {
     is RecordType -> "${tryRenderStructOrUnion(type.decl.def!!)} $name"
     is EnumType -> tryRenderVar(type.def.baseType, name)
     is PointerType -> "void* $name"
+    is LValueRefType -> "void* $name"
     is ConstArrayType -> tryRenderVar(type.elemType, "$name[${type.length}]")
     is IncompleteArrayType -> tryRenderVar(type.elemType, "$name[]")
     is Typedef -> tryRenderVar(type.def.aliased, name)

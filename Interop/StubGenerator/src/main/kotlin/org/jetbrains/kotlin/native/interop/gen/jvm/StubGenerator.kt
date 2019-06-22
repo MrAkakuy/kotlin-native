@@ -686,6 +686,8 @@ class StubGenerator(
                 } else {
                     val mirror = mirror(parameter.type)
                     kotlinParameters.add(parameterName to mirror.argType)
+                    if (parameter.type is LValueRefType)
+                        bodyGenerator.pushMemScoped()
                     parameterName
                 }
                 bridgeArguments.add(TypedKotlinValue(parameter.type, bridgeArgument))

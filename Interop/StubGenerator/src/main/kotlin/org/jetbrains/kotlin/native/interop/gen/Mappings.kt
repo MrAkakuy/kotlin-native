@@ -203,6 +203,23 @@ sealed class TypeInfo {
         override fun constructPointedType(valueType: KotlinType) = KotlinTypes.cPointerVarOf.typeWith(valueType)
     }
 
+    class LValueRef(val pointee: KotlinType, val cPointee: Type) : TypeInfo() {
+        override fun argToBridged(expr: String) = "$expr.ptr.rawValue"
+
+        override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
+                "interpretPointed<${pointee.render(scope)}>($expr)"
+
+        override val bridgedType: BridgedType
+            get() = BridgedType.NATIVE_PTR
+
+        override fun cFromBridged(expr: NativeExpression, scope: NativeScope, nativeBacked: NativeBacked) =
+                "*(${getPointerTypeStringRepresentation(cPointee)})$expr"
+
+        override fun cToBridged(expr: NativeExpression) = "&($expr)"
+
+        override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = throw NotImplementedError()
+    }
+
     class ObjCPointerInfo(val kotlinType: KotlinType, val type: ObjCPointer) : TypeInfo() {
         override fun argToBridged(expr: String) = "$expr.objcPtr()"
 
@@ -437,6 +454,18 @@ fun mirror(declarationMapper: DeclarationMapper, type: Type): TypeMirror = when 
                     KotlinTypes.cPointer.typeWith(pointeeMirror.pointedType)
             )
         }
+    }
+
+    is LValueRefType -> {
+        val pointeeType = type.pointeeType
+        val pointeeMirror = mirror(declarationMapper, pointeeType)
+        val info = TypeInfo.LValueRef(pointeeMirror.pointedType, pointeeType)
+        TypeMirror.ByValue(
+                pointeeMirror.pointedType,
+                info,
+                pointeeMirror.pointedType,
+                false
+        )
     }
 
     is ArrayType -> {

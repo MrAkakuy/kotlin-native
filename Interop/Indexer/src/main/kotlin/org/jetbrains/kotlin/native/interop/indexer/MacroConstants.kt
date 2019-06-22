@@ -181,6 +181,7 @@ private fun processCodeSnippet(
             when(type.unwrapTypedefs()) {
                 is PrimitiveType,
                 is PointerType,
+                is LValueRefType,
                 is ObjCPointer -> WrappedMacroDef(name, type)
                 else -> null
             }

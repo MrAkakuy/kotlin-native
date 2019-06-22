@@ -16,10 +16,7 @@
 
 package org.jetbrains.kotlin.native.interop.gen
 
-import org.jetbrains.kotlin.native.interop.indexer.RecordType
-import org.jetbrains.kotlin.native.interop.indexer.Type
-import org.jetbrains.kotlin.native.interop.indexer.VoidType
-import org.jetbrains.kotlin.native.interop.indexer.unwrapTypedefs
+import org.jetbrains.kotlin.native.interop.indexer.*
 
 /**
  * The [MappingBridgeGenerator] implementation which uses [SimpleBridgeGenerator] as the backend and
@@ -101,6 +98,9 @@ class MappingBridgeGeneratorImpl(
                     out("${unwrappedReturnType.decl.spelling} $kniStructResult = $nativeResult;")
                     out("memcpy(${bridgeNativeValues.last()}, &$kniStructResult, sizeof($kniStructResult));")
                     ""
+                }
+                is LValueRefType -> {
+                    "&($nativeResult)"
                 }
                 else -> {
                     nativeResult

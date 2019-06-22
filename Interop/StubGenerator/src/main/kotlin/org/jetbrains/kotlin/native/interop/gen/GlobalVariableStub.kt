@@ -19,6 +19,7 @@ package org.jetbrains.kotlin.native.interop.gen
 import org.jetbrains.kotlin.native.interop.gen.jvm.StubGenerator
 import org.jetbrains.kotlin.native.interop.indexer.ArrayType
 import org.jetbrains.kotlin.native.interop.indexer.GlobalDecl
+import org.jetbrains.kotlin.native.interop.indexer.LValueRefType
 import org.jetbrains.kotlin.native.interop.indexer.unwrapTypedefs
 
 class GlobalVariableStub(global: GlobalDecl, stubGenerator: StubGenerator) : KotlinStub, NativeBacked {
@@ -54,7 +55,13 @@ class GlobalVariableStub(global: GlobalDecl, stubGenerator: StubGenerator) : Kot
             kotlinType = (mirror as TypeMirror.ByValue).valueType
             getter = mirror.info.argFromBridged(getAddressExpression, kotlinScope, nativeBacked = this) + "!!"
             setter = null
-        } else {
+        }
+        else if (unwrappedType is LValueRefType) {
+            kotlinType = mirror.pointedType
+            getter = mirror.info.argFromBridged(getAddressExpression, kotlinScope, nativeBacked = this)
+            setter = null
+        }
+        else {
             if (mirror is TypeMirror.ByValue) {
                 getter = mirror.info.argFromBridged(stubGenerator.simpleBridgeGenerator.kotlinToNative(
                         nativeBacked = this,

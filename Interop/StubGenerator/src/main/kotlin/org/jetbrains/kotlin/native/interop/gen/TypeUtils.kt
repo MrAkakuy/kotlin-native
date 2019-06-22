@@ -39,6 +39,7 @@ fun Type.getStringRepresentation(): String = when (this) {
     is FloatingType -> this.spelling
 
     is PointerType, is ArrayType -> "void*"
+    //is LValueRefType -> "void*"
 
     is RecordType -> this.decl.spelling
 

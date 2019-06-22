@@ -570,6 +570,18 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 )
             }
 
+            CXType_LValueReference -> {
+                val pointeeType = clang_getPointeeType(type)
+                val pointeeIsConst =
+                        (clang_isConstQualifiedType(clang_getCanonicalType(pointeeType)) != 0)
+
+                val convertedPointeeType = convertType(pointeeType)
+                LValueRefType(
+                        convertedPointeeType,
+                        pointeeIsConst = pointeeIsConst
+                )
+            }
+
             CXType_ConstantArray -> {
                 val elementType = convertType(clang_getArrayElementType(type))
                 val length = clang_getArraySize(type)
