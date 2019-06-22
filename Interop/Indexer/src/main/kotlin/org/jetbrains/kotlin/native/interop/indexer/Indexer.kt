@@ -38,7 +38,10 @@ private class StructDefImpl(
         size, align, decl
 ) {
     override val members = mutableListOf<StructMember>()
-    override val methods = mutableListOf<FunctionDecl>()
+
+    val uniqueMethods = mutableSetOf<FunctionDecl>()
+    override val methods
+        get() = uniqueMethods.toList()
 }
 
 private class EnumDefImpl(spelling: String, type: Type, override val location: Location) : EnumDef(spelling, type) {
@@ -127,6 +130,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
     override val structs: List<StructDecl> get() = structRegistry.included
     private val structRegistry = TypeDeclarationRegistry<StructDeclImpl>()
+    private val structMethodsById = mutableMapOf<StructDeclImpl, MutableMap<DeclarationID, FunctionDecl>>()
 
     override val enums: List<EnumDef> get() = enumRegistry.included
     private val enumRegistry = TypeDeclarationRegistry<EnumDefImpl>()
@@ -793,8 +797,13 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
             }
 
             CXIdxEntity_CXXInstanceMethod -> {
-                val owner = getStructDeclAt(info.semanticContainer!!.pointed.cursor.readValue())
-                owner.def?.methods?.add(getFunction(cursor, owner))
+                if (isSuitableFunction(cursor)) {
+                    val owner = getStructDeclAt(info.semanticContainer!!.pointed.cursor.readValue())
+                    val method = structMethodsById.getOrPut(owner, { mutableMapOf() }).getOrPut(getDeclarationId(cursor)) {
+                        getFunction(cursor, owner)
+                    }
+                    owner.def!!.uniqueMethods.add(method)
+                }
             }
 
             CXIdxEntity_Typedef -> {
