@@ -349,12 +349,13 @@ class StubGenerator(
      */
     private inner class KotlinStructStub(val decl: StructDecl) : KotlinStub {
         override fun generate(context: StubGenerationContext): Sequence<String> =
-                if (lines.isEmpty())
-                    sequenceOf()
-                else if (methods.isEmpty())
-                    lines.asSequence()
-                else
-                    lines.asSequence() + methods.map { it.generate(context).map { "    $it" } }.asSequence().flatten() + "}"
+                when {
+                    lines.isEmpty() -> sequenceOf()
+                    methods.isEmpty() -> lines.asSequence()
+                    else -> {
+                        lines.asSequence() + methods.map { it.generate(context).map { "    $it" } }.asSequence().flatten() + "}"
+                    }
+                }
 
         private val lines: List<String>
         private val methods: List<KotlinStub>
@@ -390,7 +391,10 @@ class StubGenerator(
             val kotlinName = kotlinFile.declare(declarationMapper.getKotlinClassForPointed(decl))
 
             val prefix = if (configuration.library.language == Language.CPP) {
-                "open "
+                if (decl.isAbstract)
+                    "abstract "
+                else
+                    "open "
             } else ""
 
             val base = if (decl.bases.isEmpty()) "CStructVar" else decl.bases.first().spelling
@@ -625,12 +629,11 @@ class StubGenerator(
 
     private inner class KotlinFunctionStub(val func: FunctionDecl) : KotlinStub, NativeBacked {
         override fun generate(context: StubGenerationContext): Sequence<String> =
-                if (isCCall) {
-                    sequenceOf("@CCall".applyToStrings(cCallSymbolName!!), "external $header")
-                } else if (context.nativeBridges.isSupported(this)) {
-                    block(header, bodyLines)
-                } else {
-                    sequenceOf(
+                when {
+                    isCCall -> sequenceOf("@CCall".applyToStrings(cCallSymbolName!!), "external $header")
+                    isAbstract -> sequenceOf(header)
+                    context.nativeBridges.isSupported(this) -> block(header, bodyLines)
+                    else -> sequenceOf(
                             annotationForUnableToImport,
                             "$header = throw UnsupportedOperationException()"
                     )
@@ -638,6 +641,7 @@ class StubGenerator(
 
         private val header: String
         private val bodyLines: List<String>
+        private val isAbstract: Boolean
         private val isCCall: Boolean
         private val cCallSymbolName: String?
 
@@ -647,7 +651,7 @@ class StubGenerator(
             val bridgeArguments = mutableListOf<TypedKotlinValue>()
 
             val owner = func.owner
-            if (owner != null) {
+            if (owner != null && !func.isStatic) {
                 bodyGenerator.pushMemScoped()
                 bridgeArguments.add(TypedKotlinValue(PointerType(owner), "this@${owner.decl.kotlinName}.ptr"))
             }
@@ -693,7 +697,11 @@ class StubGenerator(
                 bridgeArguments.add(TypedKotlinValue(parameter.type, bridgeArgument))
             }
 
-            if (!func.isVararg || platform != KotlinPlatform.NATIVE) {
+            if (func.isPureVirtual) {
+                isAbstract = true
+                isCCall = false
+                cCallSymbolName = null
+            } else if (!func.isVararg || platform != KotlinPlatform.NATIVE) {
                 val result = mappingBridgeGenerator.kotlinToNative(
                         bodyGenerator,
                         this,
@@ -702,15 +710,20 @@ class StubGenerator(
                         independent = false
                 ) { nativeValues ->
                     if (owner != null)
-                        "(${nativeValues.first()})->${func.name}(${nativeValues.drop(1).joinToString()})"
+                        if (func.isStatic)
+                            "${owner.decl.spelling}::${func.name}(${nativeValues.joinToString()})"
+                        else
+                            "(${nativeValues.first()})->${func.name}(${nativeValues.drop(1).joinToString()})"
                     else
                         "${func.name}(${nativeValues.joinToString()})"
                 }
                 bodyGenerator.returnResult(result)
+                isAbstract = false
                 isCCall = false
                 cCallSymbolName = null
             } else {
                 kotlinParameters.add("vararg variadicArguments" to KotlinTypes.any.makeNullable())
+                isAbstract = false
                 isCCall = true // TODO: don't generate unused body in this case.
                 cCallSymbolName = "knifunptr_" + pkgName.replace('.', '_') + nextUniqueId()
 
@@ -728,12 +741,26 @@ class StubGenerator(
                 mirror(func.returnType).argType
             }.render(kotlinFile)
 
+            val prefix = when {
+                func.isPureVirtual -> "abstract "
+                func.isVirtual -> {
+                    val proto = owner?.decl?.bases?.getOrNull(0)?.def?.methods?.find {
+                        it.name == func.name && it.parameters == func.parameters && it.returnType == func.returnType && it.isVirtual
+                    }
+                    if (proto != null) "override " else "open "
+                }
+                else -> ""
+            }
+
             val joinedKotlinParameters = kotlinParameters.joinToString { (name, type) ->
                 "$name: ${type.render(kotlinFile)}"
             }
-            this.header = "fun ${func.name.asSimpleName()}($joinedKotlinParameters): $returnType"
+            this.header = "${prefix}fun ${func.name.asSimpleName()}($joinedKotlinParameters): $returnType"
 
-            this.bodyLines = bodyGenerator.build()
+            this.bodyLines = if (!func.isPureVirtual)
+                bodyGenerator.build()
+            else
+                listOf()
         }
     }
 

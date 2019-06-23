@@ -126,7 +126,7 @@ class IncompleteField(name: String, type: Type) : StructMember(name, type) {
 /**
  * C/C++ struct/class declaration.
  */
-abstract class StructDecl(val spelling: String) : TypeDeclaration {
+abstract class StructDecl(val spelling: String, val isAbstract: Boolean = false) : TypeDeclaration {
 
     abstract val bases: List<StructDecl>
     abstract val def: StructDef?
@@ -146,6 +146,7 @@ abstract class StructDef(val size: Long, val align: Int, val decl: StructDecl) {
 
     abstract val members: List<StructMember>
     abstract val methods: List<FunctionDecl>
+    abstract val staticMethods: List<FunctionDecl>
     abstract val kind: Kind
 
     val fields: List<Field> get() = members.filterIsInstance<Field>()

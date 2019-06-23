@@ -24,9 +24,11 @@ import kotlinx.cinterop.*
 private class StructDeclImpl(
         spelling: String,
         override val location: Location,
-        override val bases: List<StructDecl>
+        override val bases: List<StructDecl>,
+        isAbstract: Boolean = false
 ) : StructDecl(
-        spelling
+        spelling,
+        isAbstract
 ) {
     override var def: StructDefImpl? = null
 }
@@ -40,8 +42,8 @@ private class StructDefImpl(
     override val members = mutableListOf<StructMember>()
 
     val uniqueMethods = mutableSetOf<FunctionDecl>()
-    override val methods
-        get() = uniqueMethods.toList()
+    override val methods get() = uniqueMethods.takeWhile { !it.isStatic }.toList()
+    override val staticMethods: List<FunctionDecl> get() = uniqueMethods.takeWhile { it.isStatic }.toList()
 }
 
 private class EnumDefImpl(spelling: String, type: Type, override val location: Location) : EnumDef(spelling, type) {
@@ -130,7 +132,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
     override val structs: List<StructDecl> get() = structRegistry.included
     private val structRegistry = TypeDeclarationRegistry<StructDeclImpl>()
-    private val structMethodsById = mutableMapOf<StructDeclImpl, MutableMap<DeclarationID, FunctionDecl>>()
+    private val structMethodsById = mutableMapOf<DeclarationID, FunctionDecl>()
 
     override val enums: List<EnumDef> get() = enumRegistry.included
     private val enumRegistry = TypeDeclarationRegistry<EnumDefImpl>()
@@ -195,21 +197,32 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
+    private fun getStructBases(info: CXIdxDeclInfo? = null): List<StructDecl> {
+        if (info == null)
+            return listOf()
+
+        val cxxDeclInfo = clang_index_getCXXClassDeclInfo(info.ptr)?.pointed ?: return listOf()
+        val bases = cxxDeclInfo.bases ?: return listOf()
+
+        return bases.convertAndDispose(cxxDeclInfo.numBases).map {
+            val baseType = clang_getCursorType(it.cursor.readValue())
+            val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
+            structRegistry.included.find { it.spelling == baseSpelling }!!
+        }
+    }
+
     private fun createStructDecl(cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null): StructDeclImpl {
         val cursorType = clang_getCursorType(cursor)
         val typeSpelling = clang_getTypeSpelling(cursorType).convertAndDispose()
 
-        val bases: List<StructDecl> = info?.let {
-            clang_index_getCXXClassDeclInfo(it.ptr)?.pointed?.let {
-                it.bases?.convertAndDispose(it.numBases)?.map {
-                    val baseType = clang_getCursorType(it.cursor.readValue())
-                    val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
-                    structRegistry.included.find { it.spelling == baseSpelling }!!
-                } ?: listOf()
-            } ?: listOf()
-        } ?: listOf()
+        val bases = getStructBases(info)
 
-        return StructDeclImpl(typeSpelling, getLocation(cursor), bases)
+        val isAbstract = if (cursor.kind == CXCursorKind.CXCursor_ClassDecl)
+            clang_CXXRecord_isAbstract(cursor) != 0
+        else
+            false
+
+        return StructDeclImpl(typeSpelling, getLocation(cursor), bases, isAbstract)
     }
 
     private fun createStructDef(structDecl: StructDeclImpl, cursor: CValue<CXCursor>) {
@@ -799,7 +812,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
             CXIdxEntity_CXXInstanceMethod -> {
                 if (isSuitableFunction(cursor)) {
                     val owner = getStructDeclAt(info.semanticContainer!!.pointed.cursor.readValue())
-                    val method = structMethodsById.getOrPut(owner, { mutableMapOf() }).getOrPut(getDeclarationId(cursor)) {
+                    val method = structMethodsById.getOrPut(getDeclarationId(cursor)) {
                         getFunction(cursor, owner)
                     }
                     owner.def!!.uniqueMethods.add(method)
@@ -909,7 +922,12 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val isVararg = clang_Cursor_isVariadic(cursor) != 0
 
         return owner?.let {
-            FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg, RecordType(it))
+            val isStatic = clang_CXXMethod_isStatic(cursor) != 0
+            val isVirtual = clang_CXXMethod_isVirtual(cursor) != 0
+            val isPureVirtual = clang_CXXMethod_isPureVirtual(cursor) != 0
+
+            FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg,
+                         RecordType(it), isStatic, isVirtual, isPureVirtual)
         } ?: FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg)
     }
 
