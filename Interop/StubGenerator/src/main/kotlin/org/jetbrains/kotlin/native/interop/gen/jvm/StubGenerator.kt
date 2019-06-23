@@ -351,24 +351,36 @@ class StubGenerator(
         override fun generate(context: StubGenerationContext): Sequence<String> =
                 when {
                     lines.isEmpty() -> sequenceOf()
-                    methods.isEmpty() -> lines.asSequence()
+                    methods.isEmpty() && staticMethods.isEmpty() -> lines.asSequence()
                     else -> {
-                        lines.asSequence() + methods.map { it.generate(context).map { "    $it" } }.asSequence().flatten() + "}"
+                        val methodsGen = methods.map {
+                            it.generate(context).map { "    $it" }
+                        }.asSequence().flatten()
+
+                        val staticMethodsGen = staticMethods.map {
+                            it.generate(context).map { "        $it" }
+                        }.asSequence().flatten()
+
+                        val part1 = lines.take(staticMethodsPlace).asSequence()
+                        val part2 = lines.take(methodsPlace).drop(staticMethodsPlace).asSequence()
+                        val part3 = lines.drop(methodsPlace).asSequence()
+
+                        part1 + staticMethodsGen + part2 + methodsGen + part3
                     }
                 }
 
         private val lines: List<String>
-        private val methods: List<KotlinStub>
+        private val methods = decl.def?.methods?.map { KotlinFunctionStub(it) } ?: listOf()
+        private val staticMethods = decl.def?.staticMethods?.map { KotlinFunctionStub(it) } ?: listOf()
+
+        private var methodsPlace: Int = 0
+        private var staticMethodsPlace: Int = 0
 
         init {
             lines = mutableListOf()
             withOutput({ lines.add(it) }) {
                 generateStruct()
             }
-
-            methods = decl.def?.methods?.map { KotlinFunctionStub(it) } ?: listOf()
-            if (methods.isNotEmpty())
-                lines.removeAt(lines.size - 1) // Removing }
         }
 
         private fun generateStruct() {
@@ -401,7 +413,14 @@ class StubGenerator(
 
             block("${prefix}class $kotlinName(rawPtr: NativePtr) : $base(rawPtr)") {
                 out("")
-                out("companion object : Type(${def.size}, ${def.align})") // FIXME: align
+                val companionHeader = "companion object : Type(${def.size}, ${def.align})" // FIXME: align
+                staticMethodsPlace = if (staticMethods.isEmpty()) {
+                    out(companionHeader)
+                    lines.size
+                } else {
+                    block(companionHeader) {}
+                    lines.size - 1
+                }
                 out("")
                 for (field in def.fields) {
                     try {
@@ -462,6 +481,8 @@ class StubGenerator(
                         out("")
                     }
                 }
+
+                methodsPlace = lines.size
             }
         }
     }

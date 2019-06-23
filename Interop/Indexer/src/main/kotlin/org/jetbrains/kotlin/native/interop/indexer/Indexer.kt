@@ -42,8 +42,8 @@ private class StructDefImpl(
     override val members = mutableListOf<StructMember>()
 
     val uniqueMethods = mutableSetOf<FunctionDecl>()
-    override val methods get() = uniqueMethods.takeWhile { !it.isStatic }.toList()
-    override val staticMethods: List<FunctionDecl> get() = uniqueMethods.takeWhile { it.isStatic }.toList()
+    override val methods get() = uniqueMethods.filter { !it.isStatic }.toList()
+    override val staticMethods get() = uniqueMethods.filter { it.isStatic }.toList()
 }
 
 private class EnumDefImpl(spelling: String, type: Type, override val location: Location) : EnumDef(spelling, type) {
@@ -809,7 +809,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 }
             }
 
-            CXIdxEntity_CXXInstanceMethod -> {
+            CXIdxEntity_CXXInstanceMethod, CXIdxEntity_CXXStaticMethod -> {
                 if (isSuitableFunction(cursor)) {
                     val owner = getStructDeclAt(info.semanticContainer!!.pointed.cursor.readValue())
                     val method = structMethodsById.getOrPut(getDeclarationId(cursor)) {
