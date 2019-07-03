@@ -14,7 +14,7 @@ import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.common.pop
 import org.jetbrains.kotlin.backend.common.push
-import org.jetbrains.kotlin.backend.konan.ir.fqNameSafe
+import org.jetbrains.kotlin.backend.konan.ir.fqNameForIrSerialization
 import org.jetbrains.kotlin.backend.konan.ir.isFunctionOrKFunctionType
 import org.jetbrains.kotlin.backend.konan.llvm.functionName
 import org.jetbrains.kotlin.descriptors.*
@@ -39,6 +39,8 @@ import org.jetbrains.kotlin.name.Name
 internal class CallableReferenceLowering(val context: Context): FileLoweringPass {
 
     private object DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL : IrDeclarationOriginImpl("FUNCTION_REFERENCE_IMPL")
+
+    private val kTypeGenerator = KTypeGenerator(context)
 
     override fun lower(irFile: IrFile) {
         var generatedClasses = mutableListOf<IrClass>()
@@ -266,7 +268,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                         val needReceiver = boundFunctionParameters.singleOrNull()?.descriptor is ReceiverParameterDescriptor
                         val receiver = if (needReceiver) irGet(valueParameters.single()) else irNull()
                         putValueArgument(3, receiver)
-                        putValueArgument(4, irKType(this@CallableReferenceLowering.context, referencedFunction.returnType))
+                        putValueArgument(4, with(kTypeGenerator) { irKType(referencedFunction.returnType) })
                     }
                     +IrInstanceInitializerCallImpl(startOffset, endOffset, functionReferenceClass.symbol, irBuiltIns.unitType)
                     // Save all arguments to fields.
@@ -278,7 +280,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
         }
 
         private val IrFunction.fullName: String
-            get() = parent.fqNameSafe.child(Name.identifier(functionName)).asString()
+            get() = parent.fqNameForIrSerialization.child(Name.identifier(functionName)).asString()
 
         private fun buildInvokeMethod(superFunction: IrSimpleFunction) = WrappedSimpleFunctionDescriptor().let {
             IrFunctionImpl(

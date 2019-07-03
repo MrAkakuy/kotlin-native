@@ -19,6 +19,7 @@ package org.jetbrains.kotlin.gradle.plugin.konan
 import org.gradle.api.Named
 import org.gradle.api.Project
 import org.gradle.api.file.FileCollection
+import org.jetbrains.kotlin.konan.target.Family
 import org.jetbrains.kotlin.konan.target.HostManager
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.konan.util.DependencyProcessor
@@ -119,7 +120,7 @@ internal class KonanInteropRunner(project: Project, additionalJvmArgs: List<Stri
         if (HostManager.host == KonanTarget.MINGW_X64) {
 	    //TODO: Oh-ho-ho fix it in more convinient way.
             environment.put("PATH", DependencyProcessor.defaultDependenciesRoot.absolutePath +
-                    "\\msys2-mingw-w64-x86_64-gcc-7.3.0-clang-llvm-lld-6.0.1" +
+                    "\\msys2-mingw-w64-x86_64-gcc-7.3.0-clang-llvm-lld-6.0.1-2" +
                     "\\bin;${environment.get("PATH")}")
         }
     }

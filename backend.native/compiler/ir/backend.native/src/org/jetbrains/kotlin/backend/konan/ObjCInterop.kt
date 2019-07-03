@@ -5,6 +5,7 @@
 
 package org.jetbrains.kotlin.backend.konan
 
+import org.jetbrains.kotlin.backend.konan.descriptors.findPackage
 import org.jetbrains.kotlin.backend.konan.descriptors.getArgumentValueOrNull
 import org.jetbrains.kotlin.backend.konan.descriptors.getStringValue
 import org.jetbrains.kotlin.backend.konan.descriptors.getStringValueOrNull
@@ -14,8 +15,9 @@ import org.jetbrains.kotlin.descriptors.annotations.AnnotationDescriptor
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.types.classifierOrFail
 import org.jetbrains.kotlin.ir.util.constructedClass
-import org.jetbrains.kotlin.ir.util.fqNameSafe
+import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
 import org.jetbrains.kotlin.ir.util.hasAnnotation
+import org.jetbrains.kotlin.ir.util.isReal
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.ExternalOverridabilityCondition
@@ -30,10 +32,12 @@ import org.jetbrains.kotlin.types.typeUtil.supertypes
 internal val interopPackageName = InteropFqNames.packageName
 internal val objCObjectFqName = interopPackageName.child(Name.identifier("ObjCObject"))
 private val objCClassFqName = interopPackageName.child(Name.identifier("ObjCClass"))
+private val objCProtocolFqName = interopPackageName.child(Name.identifier("ObjCProtocol"))
 internal val externalObjCClassFqName = interopPackageName.child(Name.identifier("ExternalObjCClass"))
 private val objCMethodFqName = interopPackageName.child(Name.identifier("ObjCMethod"))
 private val objCConstructorFqName = FqName("kotlinx.cinterop.ObjCConstructor")
 private val objCFactoryFqName = interopPackageName.child(Name.identifier("ObjCFactory"))
+private val objcnamesForwardDeclarationsPackageName = Name.identifier("objcnames")
 
 @Deprecated("Use IR version rather than descriptor version")
 fun ClassDescriptor.isObjCClass(): Boolean =
@@ -47,8 +51,8 @@ fun KotlinType.isObjCObjectType(): Boolean =
 private fun IrClass.getAllSuperClassifiers(): List<IrClass> =
         listOf(this) + this.superTypes.flatMap { (it.classifierOrFail.owner as IrClass).getAllSuperClassifiers() }
 
-internal fun IrClass.isObjCClass() = this.getAllSuperClassifiers().any { it.fqNameSafe == objCObjectFqName } &&
-        this.parent.fqNameSafe != interopPackageName
+internal fun IrClass.isObjCClass() = this.getAllSuperClassifiers().any { it.fqNameForIrSerialization == objCObjectFqName } &&
+        this.parent.fqNameForIrSerialization != interopPackageName
 
 @Deprecated("Use IR version rather than descriptor version")
 fun ClassDescriptor.isExternalObjCClass(): Boolean = this.isObjCClass() &&
@@ -61,9 +65,18 @@ fun IrClass.isExternalObjCClass(): Boolean = this.isObjCClass() &&
             it.descriptor.annotations.hasAnnotation(externalObjCClassFqName)
         }
 
+fun ClassDescriptor.isObjCForwardDeclaration(): Boolean =
+        this.findPackage().fqName.startsWith(objcnamesForwardDeclarationsPackageName)
+
 fun ClassDescriptor.isObjCMetaClass(): Boolean = this.getAllSuperClassifiers().any {
     it.fqNameSafe == objCClassFqName
 }
+
+fun IrClass.isObjCProtocolClass(): Boolean =
+        this.fqNameForIrSerialization == objCProtocolFqName
+
+fun ClassDescriptor.isObjCProtocolClass(): Boolean =
+        this.fqNameSafe == objCProtocolFqName
 
 fun FunctionDescriptor.isObjCClassMethod() =
         this.containingDeclaration.let { it is ClassDescriptor && it.isObjCClass() }
@@ -211,6 +224,7 @@ fun ConstructorDescriptor.objCConstructorIsDesignated(): Boolean {
 
 val IrConstructor.isObjCConstructor get() = this.descriptor.annotations.hasAnnotation(objCConstructorFqName)
 
+// TODO-DCE-OBJC-INIT: Selector should be preserved by DCE.
 fun IrConstructor.getObjCInitMethod(): IrSimpleFunction? {
     return this.descriptor.annotations.findAnnotation(objCConstructorFqName)?.let {
         val initSelector = it.getStringValue("initSelector")

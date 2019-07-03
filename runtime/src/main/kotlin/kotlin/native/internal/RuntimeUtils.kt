@@ -28,10 +28,12 @@ fun ThrowTypeCastException(): Nothing {
     throw TypeCastException()
 }
 
+@ExportForCppRuntime
 fun ThrowInvalidReceiverTypeException(klass: KClass<*>): Nothing {
     throw RuntimeException("Unexpected receiver type: " + (klass.qualifiedName ?: "noname"))
 }
 
+@ExportForCppRuntime
 internal fun ThrowArithmeticException() : Nothing {
     throw ArithmeticException()
 }
@@ -70,8 +72,8 @@ internal fun ThrowNotImplementedError(): Nothing {
 }
 
 @ExportForCppRuntime
-internal fun ThrowIllegalCharacterConversionException(): Nothing {
-    throw IllegalCharacterConversionException()
+internal fun ThrowCharacterCodingException(): Nothing {
+    throw CharacterCodingException()
 }
 
 @ExportForCppRuntime
@@ -158,7 +160,7 @@ fun KonanObjectToUtf8Array(value: Any?): ByteArray {
         is DoubleArray -> value.contentToString()
         else -> value.toString()
     }
-    return string.toUtf8()
+    return string.encodeToByteArray()
 }
 
 @TypedIntrinsic(IntrinsicType.LIST_OF_INTERNAL)

@@ -14,7 +14,7 @@ import org.jetbrains.kotlin.backend.common.validateIrModule
 import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.ir.KonanIr
 import org.jetbrains.kotlin.backend.konan.library.KonanLibraryWriter
-import org.jetbrains.kotlin.backend.konan.library.LinkData
+import org.jetbrains.kotlin.library.SerializedMetadata
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.DECLARATION_ORIGIN_BRIDGE_METHOD
 import org.jetbrains.kotlin.backend.konan.optimizations.Devirtualization
@@ -40,7 +40,6 @@ import org.jetbrains.kotlin.builtins.konan.KonanBuiltIns
 import org.jetbrains.kotlin.cli.jvm.compiler.KotlinCoreEnvironment
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
-import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.BindingContext
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
@@ -54,6 +53,9 @@ import org.jetbrains.kotlin.backend.common.serialization.KotlinMangler
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
 import org.jetbrains.kotlin.backend.konan.llvm.coverage.CoverageManager
 import org.jetbrains.kotlin.ir.symbols.impl.IrTypeParameterSymbolImpl
+import org.jetbrains.kotlin.name.FqName
+import org.jetbrains.kotlin.konan.library.KonanLibraryLayout
+import org.jetbrains.kotlin.library.SerializedIr
 
 /**
  * Offset for synthetic elements created by lowerings and not attributable to other places in the source code.
@@ -191,6 +193,7 @@ internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler 
 }
 
 internal class Context(config: KonanConfig) : KonanBackendContext(config) {
+    lateinit var frontendServices: FrontendServices
     lateinit var environment: KotlinCoreEnvironment
     lateinit var bindingContext: BindingContext
 
@@ -216,6 +219,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     private val packageScope by lazy { builtIns.builtInsModule.getPackage(KonanFqNames.internalPackageName).memberScope }
 
     val nativePtr by lazy { packageScope.getContributedClassifier(NATIVE_PTR_NAME) as ClassDescriptor }
+    val nonNullNativePtr by lazy { packageScope.getContributedClassifier(NON_NULL_NATIVE_PTR_NAME) as ClassDescriptor }
     val getNativeNullPtr  by lazy { packageScope.getContributedFunctions("getNativeNullPtr").single() }
     val immutableBlobOf by lazy {
         builtIns.builtInsModule.getPackage(KonanFqNames.packageName).memberScope.getContributedFunctions("immutableBlobOf").single()
@@ -258,17 +262,17 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
         KonanReflectionTypes(moduleDescriptor, KonanFqNames.internalPackageName)
     }
 
-    private val vtableBuilders = mutableMapOf<IrClass, ClassVtablesBuilder>()
+    val layoutBuilders = mutableMapOf<IrClass, ClassLayoutBuilder>()
 
-    fun getVtableBuilder(classDescriptor: IrClass) = vtableBuilders.getOrPut(classDescriptor) {
-        ClassVtablesBuilder(classDescriptor, this)
+    fun getLayoutBuilder(irClass: IrClass) = layoutBuilders.getOrPut(irClass) {
+        ClassLayoutBuilder(irClass, this)
     }
 
-    // We serialize untouched descriptor tree and inline IR bodies
-    // right after the frontend.
+    // We serialize untouched descriptor tree and IR.
     // But we have to wait until the code generation phase,
     // to dump this information into generated file.
-    var serializedLinkData: LinkData? = null
+    var serializedMetadata: SerializedMetadata? = null
+    var serializedIr: SerializedIr? = null
     var dataFlowGraph: ByteArray? = null
 
     val librariesWithDependencies by lazy {
@@ -322,7 +326,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     val llvmImports: LlvmImports = Llvm.ImportsImpl(this)
     lateinit var llvmDeclarations: LlvmDeclarations
     lateinit var bitcodeFileName: String
-    lateinit var library: KonanLibraryWriter
+    lateinit var library: KonanLibraryLayout
 
     val cStubsManager = CStubsManager(config.target)
 
@@ -423,29 +427,19 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
         printIr()
         printBitCode()
     }
-
-    fun shouldVerifyDescriptors() = config.configuration.getBoolean(KonanConfigKeys.VERIFY_DESCRIPTORS)
-
-    fun shouldVerifyIr() = config.configuration.getBoolean(KonanConfigKeys.VERIFY_IR)
-
     fun shouldVerifyBitCode() = config.configuration.getBoolean(KonanConfigKeys.VERIFY_BITCODE)
-
-    fun shouldPrintDescriptors() = config.configuration.getBoolean(KonanConfigKeys.PRINT_DESCRIPTORS)
-
-    fun shouldPrintIr() = config.configuration.getBoolean(KonanConfigKeys.PRINT_IR)
-
-    fun shouldPrintIrWithDescriptors()=
-            config.configuration.getBoolean(KonanConfigKeys.PRINT_IR_WITH_DESCRIPTORS)
 
     fun shouldPrintBitCode() = config.configuration.getBoolean(KonanConfigKeys.PRINT_BITCODE)
 
     fun shouldPrintLocations() = config.configuration.getBoolean(KonanConfigKeys.PRINT_LOCATIONS)
 
-    fun shouldProfilePhases() = config.configuration.getBoolean(KonanConfigKeys.TIME_PHASES)
+    fun shouldProfilePhases() = config.phaseConfig.needProfiling
 
     fun shouldContainDebugInfo() = config.debug
 
     fun shouldOptimize() = config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION)
+
+    val memoryModel = config.memoryModel
 
     override var inVerbosePhase = false
     override fun log(message: () -> String) {
@@ -461,6 +455,8 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     lateinit var codegenVisitor: CodeGeneratorVisitor
     var devirtualizationAnalysisResult: Devirtualization.AnalysisResult? = null
 
+    var referencedFunctions: Set<IrFunction>? = null
+
     val isNativeLibrary: Boolean by lazy {
         val kind = config.configuration.get(KonanConfigKeys.PRODUCE)
         kind == CompilerOutputKind.DYNAMIC || kind == CompilerOutputKind.STATIC
@@ -469,7 +465,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     internal val stdlibModule
         get() = this.builtIns.any.module
 
-    lateinit var linkStage: LinkStage
+    lateinit var compilerOutput: List<ObjectFile>
 }
 
 private fun MemberScope.getContributedClassifier(name: String) =

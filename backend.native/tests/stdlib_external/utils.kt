@@ -17,3 +17,10 @@ public actual fun assertTypeEquals(expected: Any?, actual: Any?) {
 }
 
 internal actual fun String.removeLeadingPlusOnJava6(): String = this
+
+internal actual inline fun testOnNonJvm6And7(f: () -> Unit) {
+    f()
+}
+
+actual fun testOnJvm(action: () -> Unit) {}
+actual fun testOnJs(action: () -> Unit) {}

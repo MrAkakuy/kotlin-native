@@ -350,6 +350,42 @@ func testCharExtensions() throws {
 
 func testLambda() throws {
     try assertEquals(actual: ValuesKt.sumLambda(3, 4), expected: 7)
+
+    var blockRuns = 0
+
+    try assertTrue(ValuesKt.runUnitBlock { blockRuns += 1 })
+    try assertEquals(actual: blockRuns, expected: 1)
+
+    let unitBlock: () -> Void = ValuesKt.asUnitBlock {
+        blockRuns += 1
+        return 42
+    }
+    try assertTrue(unitBlock() == Void())
+    try assertEquals(actual: blockRuns, expected: 2)
+
+    let nothingBlock: () -> Void = ValuesKt.asNothingBlock { blockRuns += 1 }
+    try assertTrue(ValuesKt.runNothingBlock(block: nothingBlock))
+    try assertEquals(actual: blockRuns, expected: 3)
+
+    try assertTrue(ValuesKt.getNullBlock() == nil)
+    try assertTrue(ValuesKt.isBlockNull(block: nil))
+
+    // Test dynamic conversion:
+    let intBlocks = IntBlocksImpl()
+    try assertEquals(actual: intBlocks.getPlusOneBlock()(1), expected: 2)
+    try assertEquals(actual: intBlocks.callBlock(argument: 2) { KotlinInt(value: $0.int32Value + 2) }, expected: 4)
+
+    // Test round trip with dynamic conversion:
+    let coercedUnitBlock: () -> KotlinUnit = UnitBlockCoercionImpl().coerce { blockRuns += 1 }
+    try assertTrue(coercedUnitBlock() === KotlinUnit())
+    try assertEquals(actual: blockRuns, expected: 4)
+
+    let uncoercedUnitBlock: () -> Void = UnitBlockCoercionImpl().uncoerce {
+        blockRuns += 1
+        return KotlinUnit()
+    }
+    try assertTrue(uncoercedUnitBlock() == Void())
+    try assertEquals(actual: blockRuns, expected: 5)
 }
 
 // -------- Tests for classes and interfaces -------
@@ -494,6 +530,7 @@ func testPureSwiftClasses() throws {
 func testNames() throws {
     try assertEquals(actual: ValuesKt.PROPERTY_NAME_MUST_NOT_BE_ALTERED_BY_SWIFT, expected: 111)
     try assertEquals(actual: Deeply.NestedType().thirtyTwo, expected: 32)
+    try assertEquals(actual: WithGenericDeeply.NestedType().thirtyThree, expected: 33)
     try assertEquals(actual: CKeywords(float: 1.0, enum : 42, goto: true).goto_, expected: true)
 }
 
@@ -534,6 +571,99 @@ func testGH2945() throws {
     try assertEquals(actual: 2, expected: gh2945.errno)
 
     try assertEquals(actual: 7, expected: gh2945.testErrnoInSelector(p: 3, errno: 4))
+}
+
+// See https://github.com/JetBrains/kotlin-native/issues/2830
+func testGH2830() throws {
+  try assertTrue(GH2830().getI() is GH2830I)
+}
+
+// See https://github.com/JetBrains/kotlin-native/issues/2959
+func testGH2959() throws {
+  try assertEquals(actual: GH2959().getI(id: 2959)[0].id, expected: 2959)
+}
+
+func testKClass() throws {
+  let test = TestKClass()
+
+  let testKClass = test.getKotlinClass(clazz: TestKClass.self)!
+  try assertTrue(test.isTestKClass(kClass: testKClass))
+  try assertFalse(test.isI(kClass: testKClass))
+  try assertEquals(actual: testKClass.simpleName, expected: "TestKClass")
+
+  let iKClass = test.getKotlinClass(protocol: TestKClassI.self)!
+  try assertFalse(test.isTestKClass(kClass: iKClass))
+  try assertTrue(test.isI(kClass: iKClass))
+  try assertEquals(actual: iKClass.simpleName, expected: "I")
+
+  try assertTrue(test.getKotlinClass(clazz: NSObject.self) == nil)
+  try assertTrue(test.getKotlinClass(clazz: PureSwiftClass.self) == nil)
+  try assertTrue(test.getKotlinClass(clazz: PureSwiftKotlinInterfaceImpl.self) == nil)
+  try assertTrue(test.getKotlinClass(clazz: Base123.self) == nil)
+
+  try assertTrue(test.getKotlinClass(protocol: NSObjectProtocol.self) == nil)
+}
+
+open class TestSR10177WorkaroundBase<T> {}
+class TestSR10177WorkaroundDerived : TestSR10177WorkaroundBase<TestSR10177Workaround> {}
+
+// See https://bugs.swift.org/browse/SR-10177 and https://bugs.swift.org/browse/SR-10217
+func testSR10177Workaround() throws {
+    let test = TestSR10177WorkaroundDerived()
+    try assertTrue(String(describing: test).contains("TestSR10177WorkaroundDerived"))
+}
+
+func testClashes() throws {
+    let test = TestClashesImpl()
+    let test1: TestClashes1 = test
+    let test2: TestClashes2 = test
+
+    try assertEquals(actual: 1, expected: test1.clashingProperty)
+    try assertEquals(actual: 1, expected: test2.clashingProperty_ as! Int32)
+    try assertEquals(actual: 2, expected: test2.clashingProperty__ as! Int32)
+}
+
+func testInvalidIdentifiers() throws {
+    let test = TestInvalidIdentifiers()
+
+    try assertTrue(TestInvalidIdentifiers._Foo() is TestInvalidIdentifiers._Foo)
+    try assertFalse(TestInvalidIdentifiers.Bar_() is TestInvalidIdentifiers._Foo)
+
+    try assertEquals(actual: 42, expected: test.a_d_d(_1: 13, _2: 14, _3: 15))
+
+    test._status = "OK"
+    try assertEquals(actual: "OK", expected: test._status)
+
+    try assertEquals(actual: TestInvalidIdentifiers.E._4_.value, expected: 4)
+    try assertEquals(actual: TestInvalidIdentifiers.E._5_.value, expected: 5)
+    try assertEquals(actual: TestInvalidIdentifiers.E.__.value, expected: 6)
+    try assertEquals(actual: TestInvalidIdentifiers.E.___.value, expected: 7)
+
+    try assertEquals(actual: TestInvalidIdentifiers.Companion_()._42, expected: 42)
+
+    try assertEquals(actual: Set([test.__, test.___]), expected: Set(["$".utf16.first, "_".utf16.first]))
+}
+
+class ImplementingHiddenSubclass : TestDeprecation.ImplementingHidden {
+    override func effectivelyHidden() -> Int32 {
+        return -2
+    }
+}
+
+func testDeprecation() throws {
+    let test = TestDeprecation()
+    try assertEquals(actual: test.openNormal(), expected: 1)
+
+    let testHiddenOverride: TestDeprecation = TestDeprecation.HiddenOverride()
+    try assertEquals(actual: testHiddenOverride.openNormal(), expected: 2)
+
+    let testErrorOverride: TestDeprecation = TestDeprecation.ErrorOverride()
+    try assertEquals(actual: testErrorOverride.openNormal(), expected: 3)
+
+    let testWarningOverride: TestDeprecation = TestDeprecation.WarningOverride()
+    try assertEquals(actual: testWarningOverride.openNormal(), expected: 4)
+
+    try assertEquals(actual: test.callEffectivelyHidden(obj: ImplementingHiddenSubclass()), expected: -2)
 }
 
 // See https://github.com/JetBrains/kotlin-native/issues/2931
@@ -597,6 +727,13 @@ class ValuesTests : TestProvider {
             TestCase(name: "TestSwiftOverride", method: withAutorelease(testSwiftOverride)),
             TestCase(name: "TestKotlinOverride", method: withAutorelease(testKotlinOverride)),
             TestCase(name: "TestGH2945", method: withAutorelease(testGH2945)),
+            TestCase(name: "TestGH2830", method: withAutorelease(testGH2830)),
+            TestCase(name: "TestGH2959", method: withAutorelease(testGH2959)),
+            TestCase(name: "TestKClass", method: withAutorelease(testKClass)),
+            TestCase(name: "TestSR10177Workaround", method: withAutorelease(testSR10177Workaround)),
+            TestCase(name: "TestClashes", method: withAutorelease(testClashes)),
+            TestCase(name: "TestInvalidIdentifiers", method: withAutorelease(testInvalidIdentifiers)),
+            TestCase(name: "TestDeprecation", method: withAutorelease(testDeprecation)),
             TestCase(name: "TestGH2931", method: withAutorelease(testGH2931)),
         ]
     }

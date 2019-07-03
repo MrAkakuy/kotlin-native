@@ -19,12 +19,12 @@ import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.ir.companionObject
+import org.jetbrains.kotlin.backend.konan.ir.containsNull
 import org.jetbrains.kotlin.backend.konan.llvm.IntrinsicType
 import org.jetbrains.kotlin.backend.konan.llvm.llvmSymbolOrigin
 import org.jetbrains.kotlin.backend.konan.llvm.tryGetIntrinsicType
 import org.jetbrains.kotlin.builtins.UnsignedTypes
 import org.jetbrains.kotlin.descriptors.*
-import org.jetbrains.kotlin.descriptors.ClassConstructorDescriptor
 import org.jetbrains.kotlin.descriptors.ClassDescriptor
 import org.jetbrains.kotlin.descriptors.TypeParameterDescriptor
 import org.jetbrains.kotlin.descriptors.ValueParameterDescriptor
@@ -390,12 +390,9 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
             }
         }
 
-        // Annotations to be detected in KotlinObjCClassInfoGenerator:
-        val annotations = createObjCMethodImpAnnotations(selector = selector, encoding = signatureEncoding)
-
         val newDescriptor = SimpleFunctionDescriptorImpl.create(
                 function.descriptor.containingDeclaration,
-                annotations,
+                Annotations.EMPTY,
                 ("imp:" + selector).synthesizedName,
                 CallableMemberDescriptor.Kind.SYNTHESIZED,
                 SourceElement.NO_SOURCE
@@ -443,6 +440,11 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
                 )
             }
         }
+
+        // Annotations to be detected in KotlinObjCClassInfoGenerator:
+
+        newFunction.annotations += buildSimpleAnnotation(context.irBuiltIns, function.startOffset, function.endOffset,
+                symbols.objCMethodImp.owner, selector, signatureEncoding)
 
         val builder = context.createIrBuilder(newFunction.symbol)
         newFunction.body = builder.irBlockBody(newFunction) {
@@ -639,6 +641,11 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
             call: IrFunctionAccessExpression,
             method: IrSimpleFunction
     ): IrExpression = generateWithStubs(call) {
+        if (method.parent !is IrClass) {
+            // Category-provided.
+            this@InteropLoweringPart1.context.llvmImports.add(method.llvmSymbolOrigin)
+        }
+
         this.generateObjCCall(
                 this@genLoweredObjCMethodCall,
                 method,

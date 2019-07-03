@@ -2,11 +2,11 @@ package org.jetbrains.kotlin.backend.konan.lower
 
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedVariableDescriptor
+import org.jetbrains.kotlin.backend.common.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.common.ir.isSuspend
 import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.lower.*
 import org.jetbrains.kotlin.backend.konan.Context
-import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
 import org.jetbrains.kotlin.ir.IrElement
@@ -44,6 +44,9 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                 symbols.continuationImpl
             })
 
+    override fun nameForCoroutineClass(function: IrFunction) =
+            "${function.name}COROUTINE\$${context.coroutineCount++}".synthesizedName
+
     override fun initializeStateMachine(coroutineConstructors: List<IrConstructor>, coroutineClassThis: IrValueDeclaration) {
         for (constructor in coroutineConstructors) {
             val labelField = constructor.parentAsClass.declarations.single { it is IrField && it.name.asString() == "label" } as IrField
@@ -62,9 +65,10 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
         )
     }
 
-    override fun buildStateMachine(originalBody: IrBody, stateMachineFunction: IrFunction,
+    override fun buildStateMachine(stateMachineFunction: IrFunction,
                                    transformingFunction: IrFunction,
                                    argumentToPropertiesMap: Map<IrValueParameter, IrField>) {
+        val originalBody = transformingFunction.body!!
         val resultArgument = stateMachineFunction.valueParameters.single()
 
         val coroutineClass = stateMachineFunction.parentAsClass

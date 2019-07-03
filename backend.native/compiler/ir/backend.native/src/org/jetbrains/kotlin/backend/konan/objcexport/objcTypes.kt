@@ -5,6 +5,8 @@
 
 package org.jetbrains.kotlin.backend.konan.objcexport
 
+import org.jetbrains.kotlin.descriptors.TypeParameterDescriptor
+
 sealed class ObjCType {
     final override fun toString(): String = this.render()
 
@@ -49,6 +51,15 @@ class ObjCClassType(
     }
 }
 
+class ObjCGenericTypeDeclaration(
+        val typeParameterDescriptor: TypeParameterDescriptor,
+        val namer: ObjCExportNamer
+) : ObjCNonNullReferenceType() {
+    override fun render(attrsAndName: String): String {
+        return namer.getTypeParameterName(typeParameterDescriptor).withAttrsAndName(attrsAndName)
+    }
+}
+
 class ObjCProtocolType(
         val protocolName: String
 ) : ObjCNonNullReferenceType() {
@@ -64,7 +75,7 @@ object ObjCInstanceType : ObjCNonNullReferenceType() {
 }
 
 class ObjCBlockPointerType(
-        val returnType: ObjCReferenceType,
+        val returnType: ObjCType,
         val parameterTypes: List<ObjCReferenceType>
 ) : ObjCNonNullReferenceType() {
 
@@ -76,6 +87,10 @@ class ObjCBlockPointerType(
         parameterTypes.joinTo(this) { it.render() }
         append(')')
     })
+}
+
+object ObjCMetaClassType : ObjCNonNullReferenceType() {
+    override fun render(attrsAndName: String): String = "Class".withAttrsAndName(attrsAndName)
 }
 
 class ObjCPrimitiveType(
@@ -114,4 +129,12 @@ internal enum class ObjCValueType(val encoding: String) {
     FLOAT("f"),
     DOUBLE("d"),
     POINTER("^v")
+}
+
+internal fun ObjCType.makeNullableIfReferenceOrPointer(): ObjCType = when (this) {
+    is ObjCPointerType -> ObjCPointerType(this.pointee, nullable = true)
+
+    is ObjCNonNullReferenceType -> ObjCNullableReferenceType(this)
+
+    is ObjCNullableReferenceType, is ObjCRawType, is ObjCPrimitiveType, ObjCVoidType -> this
 }

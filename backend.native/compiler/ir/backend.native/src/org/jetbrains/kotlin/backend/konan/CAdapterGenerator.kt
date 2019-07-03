@@ -104,8 +104,6 @@ internal val cKeywords = setOf(
         "xor_eq"
 )
 
-private val cnameAnnotation = FqName("kotlin.native.CName")
-
 private fun org.jetbrains.kotlin.types.KotlinType.isGeneric() =
         constructor.declarationDescriptor is TypeParameterDescriptor
 
@@ -143,7 +141,7 @@ private fun AnnotationDescriptor.properValue(key: String) =
 
 private fun functionImplName(descriptor: DeclarationDescriptor, default: String, shortName: Boolean): String {
     assert(descriptor is FunctionDescriptor)
-    val annotation = descriptor.annotations.findAnnotation(cnameAnnotation) ?: return default
+    val annotation = descriptor.annotations.findAnnotation(RuntimeNames.cnameAnnotation) ?: return default
     val key = if (shortName) "shortName" else "externName"
     val value = annotation.properValue(key)
     return value.takeIf { value != null && value.isNotEmpty() } ?: default
@@ -265,9 +263,10 @@ private class ExportedElement(val kind: ElementKind,
     val isFunction = declaration is FunctionDescriptor
     val isTopLevelFunction: Boolean
         get() {
-            if (declaration !is FunctionDescriptor || !declaration.annotations.hasAnnotation(cnameAnnotation))
+            if (declaration !is FunctionDescriptor ||
+                    !declaration.annotations.hasAnnotation(RuntimeNames.cnameAnnotation))
                 return false
-            val annotation = declaration.annotations.findAnnotation(cnameAnnotation)!!
+            val annotation = declaration.annotations.findAnnotation(RuntimeNames.cnameAnnotation)!!
             val externName = annotation.properValue("externName")
             return externName != null && externName.isNotEmpty()
         }
@@ -432,6 +431,7 @@ private class ExportedElement(val kind: ElementKind,
         val isStringReturned = owner.isMappedToString(cfunction[0].second)
         // TODO: do we really need that in every function?
         builder.append("  Kotlin_initRuntimeIfNeeded();\n")
+        builder.append("   try {\n")
         if (isObjectReturned || isStringReturned) {
             builder.append("  KObjHolder result_holder;\n")
             args += "result_holder.slot()"
@@ -455,6 +455,8 @@ private class ExportedElement(val kind: ElementKind,
                     "result", cfunction[0].second, Direction.KOTLIN_TO_C, builder)
             builder.append("  return $result;\n")
         }
+        builder.append("   } catch (ExceptionObjHolder& e) { TerminateWithUnhandledException(e.obj()); } \n")
+
         builder.append("}\n")
 
         return builder.toString()
@@ -885,6 +887,7 @@ internal class CAdapterGenerator(val context: Context) : DeclarationDescriptorVi
         |
         |#define RUNTIME_NOTHROW __attribute__((nothrow))
         |#define RUNTIME_USED __attribute__((used))
+        |#define RUNTIME_NORETURN __attribute__((noreturn))
         |
         |extern "C" {
         |void UpdateHeapRef(KObjHeader**, const KObjHeader*) RUNTIME_NOTHROW;
@@ -897,6 +900,7 @@ internal class CAdapterGenerator(val context: Context) : DeclarationDescriptorVi
         |void EnterFrame(KObjHeader** start, int parameters, int count) RUNTIME_NOTHROW;
         |void LeaveFrame(KObjHeader** start, int parameters, int count) RUNTIME_NOTHROW;
         |void Kotlin_initRuntimeIfNeeded();
+        |void TerminateWithUnhandledException(KObjHeader*) RUNTIME_NORETURN;
         |
         |KObjHeader* CreateStringFromCString(const char*, KObjHeader**);
         |char* CreateCStringFromString(const KObjHeader*);
@@ -930,6 +934,20 @@ internal class CAdapterGenerator(val context: Context) : DeclarationDescriptorVi
         |
         |  KObjHeader** frame() { return reinterpret_cast<KObjHeader**>(&frame_); }
         |};
+        |
+        |class ExceptionObjHolder {
+        | public:
+        |  explicit ExceptionObjHolder(const KObjHeader* obj): obj_(nullptr) {
+        |    ::UpdateHeapRef(&obj_, obj);
+        |  }
+        |  ~ExceptionObjHolder() {
+        |    UpdateHeapRef(&obj_, nullptr);
+        |  }
+        |  KObjHeader* obj() { return obj_; }
+        | private:
+        |  KObjHeader* obj_;
+        |};
+        |
         |static void DisposeStablePointerImpl(${prefix}_KNativePtr ptr) {
         |  DisposeStablePointer(ptr);
         |}

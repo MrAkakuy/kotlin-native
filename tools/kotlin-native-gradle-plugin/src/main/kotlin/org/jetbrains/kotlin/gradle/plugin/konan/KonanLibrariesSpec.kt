@@ -24,7 +24,7 @@ import org.gradle.api.tasks.InputFiles
 import org.gradle.api.tasks.Internal
 import org.jetbrains.kotlin.gradle.plugin.tasks.KonanArtifactWithLibrariesTask
 import org.jetbrains.kotlin.gradle.plugin.tasks.KonanBuildingTask
-import org.jetbrains.kotlin.konan.CURRENT
+import org.jetbrains.kotlin.konan.*
 import org.jetbrains.kotlin.konan.KonanVersion
 import org.jetbrains.kotlin.konan.library.SearchPathResolver
 import org.jetbrains.kotlin.konan.library.defaultResolver
@@ -145,12 +145,11 @@ open class KonanLibrariesSpec(val task: KonanArtifactWithLibrariesTask, val proj
     }
 
     fun asFiles(): List<File> = asFiles(
-            defaultResolver(
-                    repos.map { it.absolutePath },
-                    task.konanTarget,
-                    Distribution(konanHomeOverride = project.konanHome),
-                    listOf(KonanVersion.CURRENT)
-            )
+        defaultResolver(
+            repos.map { it.absolutePath },
+            task.konanTarget,
+            Distribution(konanHomeOverride = project.konanHome)
+        )
     )
 
     fun asFiles(resolver: SearchPathResolver): List<File> = mutableListOf<File>().apply {

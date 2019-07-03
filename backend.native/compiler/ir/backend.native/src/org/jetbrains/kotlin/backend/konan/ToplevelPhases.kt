@@ -3,18 +3,20 @@ package org.jetbrains.kotlin.backend.konan
 import org.jetbrains.kotlin.backend.common.LoggingContext
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.phaser.*
-import org.jetbrains.kotlin.backend.common.serialization.DeserializationStrategy
+import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
 import org.jetbrains.kotlin.backend.konan.descriptors.isForwardDeclarationModule
 import org.jetbrains.kotlin.backend.konan.descriptors.konanLibrary
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
-import org.jetbrains.kotlin.backend.konan.serialization.*
+import org.jetbrains.kotlin.backend.konan.serialization.KonanDeclarationTable
+import org.jetbrains.kotlin.backend.konan.serialization.KonanIrLinker
+import org.jetbrains.kotlin.backend.konan.serialization.KonanIrModuleSerializer
+import org.jetbrains.kotlin.backend.konan.serialization.KonanSerializationUtil
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
-import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.util.SymbolTable
@@ -176,29 +178,22 @@ internal val patchDeclarationParents0Phase = konanUnitPhase(
 internal val serializerPhase = konanUnitPhase(
         op = {
             val declarationTable = KonanDeclarationTable(irModule!!.irBuiltins, DescriptorTable())
-            val serializedIr = KonanIrModuleSerializer(this, declarationTable).serializedIrModule(irModule!!)
+            serializedIr = KonanIrModuleSerializer(this, declarationTable).serializedIrModule(irModule!!)
             val serializer = KonanSerializationUtil(this, config.configuration.get(CommonConfigurationKeys.METADATA_VERSION)!!, declarationTable)
-            serializedLinkData =
-                    serializer.serializeModule(moduleDescriptor, /*if (!config.isInteropStubs) serializedIr else null*/ serializedIr)
+            serializedMetadata = serializer.serializeModule(moduleDescriptor)
         },
         name = "Serializer",
         description = "Serialize descriptor tree and inline IR bodies"
 )
 
-internal val setUpLinkStagePhase = konanUnitPhase(
-        op =  { linkStage = LinkStage(this) },
-        name = "SetUpLinkStage",
-        description = "Set up link stage"
-)
-
 internal val objectFilesPhase = konanUnitPhase(
-        op = { linkStage.makeObjectFiles() },
+        op = { compilerOutput = BitcodeCompiler(this).makeObjectFiles(bitcodeFileName) },
         name = "ObjectFiles",
         description = "Bitcode to object file"
 )
 
 internal val linkerPhase = konanUnitPhase(
-        op = { linkStage.linkStage() },
+        op = { Linker(this).link(compilerOutput) },
         name = "Linker",
         description = "Linker"
 )
@@ -206,8 +201,7 @@ internal val linkerPhase = konanUnitPhase(
 internal val linkPhase = namedUnitPhase(
         name = "Link",
         description = "Link stage",
-        lower = setUpLinkStagePhase then
-                objectFilesPhase then
+        lower = objectFilesPhase then
                 linkerPhase
 )
 
@@ -257,7 +251,6 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
         name = "LowerLibIR",
         description = "Lower library's IR",
         prerequisite = emptySet(),
-        dumperVerifier = EmptyDumperVerifier(),
         lower = object : CompilerPhase<Context, IrModuleFragment, IrModuleFragment> {
             override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<IrModuleFragment>, context: Context, input: IrModuleFragment): IrModuleFragment {
                 val files = mutableListOf<IrFile>()
@@ -294,17 +287,17 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
 internal val bitcodePhase = namedIrModulePhase(
         name = "Bitcode",
         description = "LLVM Bitcode generation",
-        lower = contextLLVMSetupPhase then
-                RTTIPhase then
-                generateDebugInfoHeaderPhase then
-                buildDFGPhase then
+        lower = buildDFGPhase then
                 serializeDFGPhase then
                 deserializeDFGPhase then
                 devirtualizationPhase then
+                dcePhase then
+                contextLLVMSetupPhase then
+                RTTIPhase then
+                generateDebugInfoHeaderPhase then
                 escapeAnalysisPhase then
                 codegenPhase then
                 finalizeDebugInfoPhase then
-                bitcodePassesPhase then
                 cStubsPhase
 )
 
@@ -330,9 +323,9 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                                 dependenciesLowerPhase then // Then lower all libraries in topological order.
                                                             // With that we guarantee that inline functions are unlowered while being inlined.
                                 bitcodePhase then
-                                produceOutputPhase then
                                 verifyBitcodePhase then
                                 printBitcodePhase then
+                                produceOutputPhase then
                                 unitSink()
                 ) then
                 linkPhase
@@ -351,5 +344,8 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         switch(bitcodePhase, config.produce != CompilerOutputKind.LIBRARY)
         switch(linkPhase, config.produce.isNativeBinary)
         switch(testProcessorPhase, getNotNull(KonanConfigKeys.GENERATE_TEST_RUNNER) != TestRunnerKind.NONE)
+        switch(buildDFGPhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
+        switch(devirtualizationPhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
+        switch(dcePhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
     }
 }

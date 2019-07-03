@@ -17,8 +17,16 @@
 apply plugin: "cpp"
 apply plugin: "c"
 
-apply from: "${rootProject.projectDir}/gradle/kotlinGradlePlugin.gradle"
+buildscript {
+  ext.rootBuildDirectory = file('..')
 
+  apply from: "$rootBuildDirectory/gradle/kotlinGradlePlugin.gradle"
+
+  dependencies {
+    classpath "org.jetbrains.kotlin:kotlin-stdlib:$buildKotlinVersion"
+    classpath "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
+  }
+}
 import org.jetbrains.kotlin.konan.target.ClangArgs
 
 model {
@@ -30,6 +38,15 @@ model {
           if (!project.parent.convention.plugins.platformInfo.isWindows())
              cppCompiler.args "-fPIC"
           cppCompiler.args "--std=c++11", "-I${llvmDir}/include", "-I${projectDir}/src/main/include"
+          if (isMac()) {
+            cppCompiler.args "-DKONAN_MACOS=1"
+          } else if (isWindows()) {
+            cppCompiler.args "-DKONAN_WINDOWS=1"
+          } else if (isLinux()) {
+            cppCompiler.args "-DKONAN_LINUX=1", "-D_GLIBCXX_USE_CXX11_ABI=0"
+          } else {
+            throw new Error("Unsupported host OS.")
+          }
           linker.args "-L${llvmDir}/lib", "-lLLVMCore", "-lLLVMSupport"
         }
         binaries.withType(SharedLibraryBinarySpec) { binary ->

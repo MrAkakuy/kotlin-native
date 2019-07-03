@@ -13,11 +13,11 @@ import org.jetbrains.kotlin.backend.common.pop
 import org.jetbrains.kotlin.backend.common.push
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.allOverriddenFunctions
-import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.backend.konan.descriptors.target
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.llvm.functionName
 import org.jetbrains.kotlin.backend.konan.llvm.localHash
+import org.jetbrains.kotlin.backend.konan.llvm.longName
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.expressions.*
@@ -212,12 +212,16 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
             }
 
             override fun visitFunction(declaration: IrFunction) {
-                declaration.body?.let {
+                val body = declaration.body
+                if (body == null) {
+                    // External function or intrinsic.
+                    symbolTable.mapFunction(declaration)
+                } else {
                     DEBUG_OUTPUT(0) {
                         println("Analysing function ${declaration.descriptor}")
                         println("IR: ${ir2stringWhole(declaration)}")
                     }
-                    analyze(declaration, it)
+                    analyze(declaration, body)
                 }
             }
 
@@ -409,6 +413,7 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
     private val executeImplProducerClassSymbol = symbols.functions[0]
     private val executeImplProducerInvoke = executeImplProducerClassSymbol.owner.simpleFunctions()
             .single { it.name == OperatorNameConventions.INVOKE }
+    private val reinterpret = symbols.reinterpret
 
     private inner class FunctionDFGBuilder(val expressionValuesExtractor: ExpressionValuesExtractor,
                                            val variableValues: VariableValues,
@@ -545,8 +550,12 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                         when (value) {
                             is IrGetValue -> getNode(value)
 
-                            is IrVararg,
-                            is IrFunctionReference -> DataFlowIR.Node.Const(symbolTable.mapType(value.type))
+                            is IrVararg -> DataFlowIR.Node.Const(symbolTable.mapType(value.type))
+
+                            is IrFunctionReference -> {
+                                val callee = value.symbol.owner
+                                DataFlowIR.Node.FunctionReference(symbolTable.mapFunction(callee), symbolTable.mapType(value.type))
+                            }
 
                             is IrConst<*> ->
                                 if (value.value == null)
@@ -585,6 +594,8 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                     DataFlowIR.Node.AllocInstance(symbolTable.mapClassReferenceType(
                                             value.getTypeArgument(0)!!.getClass()!!
                                     ))
+
+                                reinterpret -> getNode(value.extensionReceiver!!)
 
                                 initInstanceSymbol -> {
                                     val thiz = expressionToEdge(value.getValueArgument(0)!!)
@@ -644,8 +655,7 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                                         value
                                                 )
                                             } else {
-                                                val vTableBuilder = context.getVtableBuilder(owner)
-                                                val vtableIndex = vTableBuilder.vtableIndex(callee)
+                                                val vtableIndex = context.getLayoutBuilder(owner).vtableIndex(callee)
                                                 DataFlowIR.Node.VtableCall(
                                                         symbolTable.mapFunction(callee.target),
                                                         receiverType,

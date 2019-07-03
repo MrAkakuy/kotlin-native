@@ -1,3 +1,4 @@
+
 /*
  * Copyright 2010-2017 JetBrains s.r.o.
  *
@@ -29,27 +30,36 @@ include ':common'
 include ':backend.native:tests'
 include ':backend.native:debugger-tests'
 include ':utilities'
-//include ':performance'    TODO: return when there is one HostManager class version
-//include ':tools:benchmarksAnalyzer'
+
+include ':performance'
+include ':performance:ring'
+include ':performance:cinterop'
+include ':performance:helloworld'
+include ':performance:videoplayer'
+include ':performance:framework'
+if (System.getProperty("os.name") == "Mac OS X") {
+    include ':performance:objcinterop'
+    include ':performance:swiftinterop'
+}
+
 include ':platformLibs'
-
-includeBuild 'version'
-includeBuild 'extracted/konan.metadata'
-includeBuild 'extracted/konan.serializer'
-includeBuild 'tools/kotlin-native-gradle-plugin'
-
 
 if (hasProperty("kotlinProjectPath")) {
     include ':runtime:generator'
     includeBuild(kotlinProjectPath) {
         dependencySubstitution {
             substitute module('org.jetbrains.kotlin:kotlin-compiler') with project(':include:kotlin-compiler')
-            substitute module("org.jetbrains.kotlin:kotlin-stdlib-common:$kotlinVersion") with project(':include:kotlin-stdlib-common-sources')
-            substitute module("org.jetbrains.kotlin:kotlin-stdlib-gen:$kotlinVersion") with project(':tools:kotlin-stdlib-gen')
+            substitute module("org.jetbrains.kotlin:kotlin-stdlib-common:$kotlinStdlibVersion") with project(':include:kotlin-stdlib-common-sources')
+            substitute module("org.jetbrains.kotlin:kotlin-stdlib-gen:$kotlinStdlibVersion") with project(':tools:kotlin-stdlib-gen')
+            substitute module("org.jetbrains.kotlin:kotlin-util-io") with project(':kotlin-util-io')
+            substitute module("org.jetbrains.kotlin:kotlin-util-klib") with project(':kotlin-util-klib')
+            substitute module("org.jetbrains.kotlin:kotlin-native-utils") with project(':kotlin-native:kotlin-native-utils')
         }
     }
 }
 
-if (hasProperty("sharedProjectPath")) {
-    includeBuild(sharedProjectPath)
-}
+includeBuild 'shared'
+includeBuild 'build-tools'
+includeBuild 'extracted/konan.metadata'
+includeBuild 'extracted/konan.serializer'
+includeBuild 'tools/kotlin-native-gradle-plugin'

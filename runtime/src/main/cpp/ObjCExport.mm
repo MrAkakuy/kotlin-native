@@ -76,6 +76,7 @@ struct ObjCTypeAdapter {
 };
 
 typedef id (*convertReferenceToObjC)(ObjHeader* obj);
+typedef OBJ_GETTER((*convertReferenceFromObjC), id obj);
 
 struct TypeInfoObjCExportAddition {
   /*convertReferenceToObjC*/ void* convert;
@@ -103,9 +104,18 @@ extern "C" id Kotlin_ObjCExport_GetAssociatedObject(ObjHeader* obj) {
 }
 
 inline static OBJ_GETTER(AllocInstanceWithAssociatedObject, const TypeInfo* typeInfo, id associatedObject) {
+  // TODO: memory model!
   ObjHeader* result = AllocInstance(typeInfo, OBJ_RESULT);
   SetAssociatedObject(result, associatedObject);
   return result;
+}
+
+extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
+                            const TypeInfo* typeInfo, id associatedObject) RUNTIME_NOTHROW;
+
+extern "C" OBJ_GETTER(Kotlin_ObjCExport_AllocInstanceWithAssociatedObject,
+                            const TypeInfo* typeInfo, id associatedObject) {
+  RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, associatedObject);
 }
 
 static Class getOrCreateClass(const TypeInfo* typeInfo);
@@ -249,8 +259,6 @@ extern "C" id Kotlin_ObjCExport_convertUnit(ObjHeader* unitInstance) {
   return instance;
 }
 
-extern "C" id objc_retainBlock(id self);
-
 extern "C" id Kotlin_ObjCExport_CreateNSStringFromKString(ObjHeader* str) {
   KChar* utf16Chars = CharArrayAddressOfElementAt(str->array(), 0);
   auto numBytes = str->array()->count_ * sizeof(KChar);
@@ -326,18 +334,37 @@ static const ObjCTypeAdapter* getTypeAdapter(const TypeInfo* typeInfo) {
   return typeInfo->writableInfo_->objCExport.typeAdapter;
 }
 
-static Protocol* getProtocolForInterface(const TypeInfo* interfaceInfo) {
+static void addProtocolForAdapter(Class clazz, const ObjCTypeAdapter* protocolAdapter) {
+  Protocol* protocol = objc_getProtocol(protocolAdapter->objCName);
+  if (protocol != nullptr) {
+    class_addProtocol(clazz, protocol);
+    class_addProtocol(object_getClass(clazz), protocol);
+  } else {
+    // TODO: construct the protocol in compiler instead, because this case can't be handled easily.
+  }
+}
+
+static void addProtocolForInterface(Class clazz, const TypeInfo* interfaceInfo) {
   const ObjCTypeAdapter* protocolAdapter = getTypeAdapter(interfaceInfo);
   if (protocolAdapter != nullptr) {
-    Protocol* protocol = objc_getProtocol(protocolAdapter->objCName);
-    if (protocol != nullptr) {
-      return protocol;
-    } else {
-      // TODO: construct the protocol in compiler instead, because this case can't be handled easily.
-    }
+    addProtocolForAdapter(clazz, protocolAdapter);
   }
+}
 
-  return nullptr;
+extern "C" const TypeInfo* Kotlin_ObjCInterop_getTypeInfoForClass(Class clazz) {
+  const TypeInfo* candidate = getAssociatedTypeInfo(clazz);
+
+  if (candidate != nullptr && (candidate->flags_ & TF_OBJC_DYNAMIC) == 0) {
+    return candidate;
+  } else {
+    return nullptr;
+  }
+}
+
+extern "C" const TypeInfo* Kotlin_ObjCInterop_getTypeInfoForProtocol(Protocol* protocol) {
+  const ObjCTypeAdapter* typeAdapter = findProtocolAdapter(protocol);
+
+  return (typeAdapter != nullptr) ? typeAdapter->kotlinTypeInfo : nullptr;
 }
 
 static const TypeInfo* getOrCreateTypeInfo(Class clazz);
@@ -372,11 +399,7 @@ static void initializeClass(Class clazz) {
   if (isClassForPackage) return;
 
   for (int i = 0; i < typeInfo->implementedInterfacesCount_; ++i) {
-    Protocol* protocol = getProtocolForInterface(typeInfo->implementedInterfaces_[i]);
-    if (protocol != nullptr) {
-      class_addProtocol(clazz, protocol);
-      class_addProtocol(object_getClass(clazz), protocol);
-    }
+    addProtocolForInterface(clazz, typeInfo->implementedInterfaces_[i]);
   }
 
 }
@@ -576,9 +599,9 @@ static const char* getBlockEncoding(id block) {
 }
 
 // Note: replaced by compiler in appropriate compilation modes.
-__attribute__((weak)) const TypeInfo * const * Kotlin_ObjCExport_functionAdaptersToBlock = nullptr;
+__attribute__((weak)) convertReferenceFromObjC* Kotlin_ObjCExport_blockToFunctionConverters = nullptr;
 
-static const TypeInfo* getFunctionTypeInfoForBlock(id block) {
+static OBJ_GETTER(blockToKotlinImp, id block, SEL cmd) {
   const char* encoding = getBlockEncoding(block);
 
   // TODO: optimize:
@@ -603,15 +626,7 @@ static const TypeInfo* getFunctionTypeInfoForBlock(id block) {
           format:@"Blocks with non-reference-typed return value aren't supported (%s)", returnTypeEncoding];
   }
 
-  // TODO: support Unit-as-void.
-
-  return Kotlin_ObjCExport_functionAdaptersToBlock[parameterCount];
-}
-
-static OBJ_GETTER(blockToKotlinImp, id self, SEL cmd) {
-  const TypeInfo* typeInfo = getFunctionTypeInfoForBlock(self);
-  RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, typeInfo, objc_retainBlock(self));
-  // TODO: call (Any) constructor?
+  RETURN_RESULT_OF(Kotlin_ObjCExport_blockToFunctionConverters[parameterCount], block);
 }
 
 static id Kotlin_ObjCExport_refToObjC_slowpath(ObjHeader* obj);
@@ -716,7 +731,7 @@ static const TypeInfo* createTypeInfo(
   TypeInfo* result = (TypeInfo*)konanAllocMemory(sizeof(TypeInfo) + vtable.size() * sizeof(void*));
   result->typeInfo_ = result;
 
-  result->flags_ = 0;
+  result->flags_ = TF_OBJC_DYNAMIC;
 
   result->instanceSize_ = superType->instanceSize_;
   result->superType_ = superType;
@@ -1013,6 +1028,7 @@ static Class createClass(const TypeInfo* typeInfo, Class superClass) {
       const ObjCTypeAdapter* typeAdapter = getTypeAdapter(interface);
       if (typeAdapter != nullptr) {
         addVirtualAdapters(result, typeAdapter);
+        addProtocolForAdapter(result, typeAdapter);
       }
     }
   }
