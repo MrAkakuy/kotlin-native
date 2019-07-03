@@ -171,12 +171,23 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(VERBOSE_PHASES,
                         arguments.verbosePhases.toNonNullList())
                 put(LIST_PHASES, arguments.listPhases)
-                put(TIME_PHASES, arguments.timePhases)
 
                 put(COMPATIBLE_COMPILER_VERSIONS,
                     arguments.compatibleCompilerVersions.toNonNullList())
 
                 put(ENABLE_ASSERTIONS, arguments.enableAssertions)
+
+                put(MEMORY_MODEL, when (arguments.memoryModel) {
+                    "relaxed" -> {
+                        configuration.report(STRONG_WARNING, "Relaxed memory model is not yet functional")
+                        MemoryModel.RELAXED
+                    }
+                    "strict" -> MemoryModel.STRICT
+                    else -> {
+                        configuration.report(ERROR, "Unsupported memory model ${arguments.memoryModel}")
+                        return
+                    }
+                })
 
                 when {
                     arguments.generateWorkerTestRunner -> put(GENERATE_TEST_RUNNER, TestRunnerKind.WORKER)
@@ -194,19 +205,20 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                     put(FRIEND_MODULES, arguments.friendModules!!.split(File.pathSeparator).filterNot(String::isEmpty))
 
                 put(EXPORTED_LIBRARIES, selectExportedLibraries(configuration, arguments, outputKind))
+                put(FRAMEWORK_IMPORT_HEADERS, arguments.frameworkImportHeaders.toNonNullList())
+                arguments.emitLazyObjCHeader?.let { put(EMIT_LAZY_OBJC_HEADER_FILE, it) }
 
                 put(BITCODE_EMBEDDING_MODE, selectBitcodeEmbeddingMode(this, arguments, outputKind))
                 put(DEBUG_INFO_VERSION, arguments.debugInfoFormatVersion.toInt())
                 put(COVERAGE, arguments.coverage)
                 put(LIBRARIES_TO_COVER, arguments.coveredLibraries.toNonNullList())
                 arguments.coverageFile?.let { put(PROFRAW_PATH, it) }
+                put(OBJC_GENERICS, arguments.objcGenerics)
             }
         }
     }
 
-    override fun createArguments(): K2NativeCompilerArguments {
-        return K2NativeCompilerArguments()
-    }
+    override fun createArguments() = K2NativeCompilerArguments()
 
     override fun executableScriptFileName() = "kotlinc-native"
 

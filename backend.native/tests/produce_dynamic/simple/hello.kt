@@ -6,6 +6,7 @@
 import kotlinx.cinterop.*
 
 import kotlin.native.CName
+import kotlin.native.concurrent.freeze
 
 // Top level functions.
 fun hello() {
@@ -22,7 +23,8 @@ fun getMutable() = Data("foo")
 open class Base {
     open fun foo() = println("Base.foo")
 
-    open fun fooParam(arg0: String, arg1: Int) = println("Base.fooParam: $arg0 $arg1")
+    open fun fooParam(arg0: String, arg1: Int, arg2: String?) =
+            println("Base.fooParam: $arg0 $arg1 ${arg2 ?: "null"}")
 
     @CName(externName = "", shortName = "strangeName") fun странноеИмя() = 111
 
@@ -59,7 +61,8 @@ object Singleton {
 }
 
 class Child : Base() {
-    override fun fooParam(arg0: String, arg1: Int) = println("Child.fooParam: $arg0 $arg1")
+    override fun fooParam(arg0: String, arg1: Int, arg2: String?) =
+            println("Child.fooParam: $arg0 $arg1 ${arg2 ?: "null"}")
 
     val roProperty: Int
         get() = 42
@@ -95,4 +98,25 @@ fun useInlineClasses(ic1: IC1, ic2: IC2, ic3: IC3) {
     assert(ic1.value == 42)
     assert(ic2.value == "bar")
     assert(ic3.value is Base)
+}
+fun setCErrorHandler(callback: CPointer<CFunction<(CPointer<ByteVar>) -> Unit>>?) {
+    setUnhandledExceptionHook({
+        throwable: Throwable ->
+        memScoped {
+            callback!!(throwable.toString().cstr.ptr)
+        }
+        kotlin.system.exitProcess(0)
+    }.freeze())
+}
+
+fun throwException() {
+    throw Error("Expected error")
+}
+
+fun getNullableString(param: Int) : String? {
+    if (param == 0) {
+        return "Hi"
+    } else {
+        return null
+    }
 }

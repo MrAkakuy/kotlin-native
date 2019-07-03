@@ -9,6 +9,7 @@ import org.jetbrains.kotlin.analyzer.AnalysisResult
 import org.jetbrains.kotlin.builtins.KotlinBuiltIns
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.LanguageVersionSettings
+import org.jetbrains.kotlin.container.get
 import org.jetbrains.kotlin.context.ModuleContext
 import org.jetbrains.kotlin.context.MutableModuleContextImpl
 import org.jetbrains.kotlin.context.ProjectContext
@@ -33,7 +34,7 @@ internal object TopDownAnalyzerFacadeForKonan {
         val config = context.config
         val moduleName = Name.special("<${config.moduleId}>") 
 
-        val projectContext = ProjectContext(config.project)
+        val projectContext = ProjectContext(config.project, "TopDownAnalyzer for Konan")
 
         val module = DefaultDescriptorFactory.createDescriptorAndNewBuiltIns(
                 moduleName, projectContext.storageManager, origin = CurrentKonanModuleOrigin)
@@ -69,11 +70,15 @@ internal object TopDownAnalyzerFacadeForKonan {
             frontendPhase in context.phaseConfig.verbose
         } ?.forEach(::println)
 
-        val analyzerForKonan = createTopDownAnalyzerForKonan(
+        val analyzerForKonan = createTopDownAnalyzerProviderForKonan(
                 moduleContext, trace,
                 FileBasedDeclarationProviderFactory(moduleContext.storageManager, files),
                 context.config.configuration.get(CommonConfigurationKeys.LANGUAGE_VERSION_SETTINGS)!!
-        )
+        ) {
+            initContainer(context.config)
+        }.apply {
+            postprocessComponents(context, files)
+        }.get<LazyTopDownAnalyzer>()
 
         analyzerForKonan.analyzeDeclarations(TopDownAnalysisMode.TopLevelDeclarations, files)
         return AnalysisResult.success(trace.bindingContext, moduleContext.module)

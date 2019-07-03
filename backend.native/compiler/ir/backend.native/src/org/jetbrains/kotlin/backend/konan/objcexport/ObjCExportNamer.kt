@@ -5,7 +5,6 @@
 
 package org.jetbrains.kotlin.backend.konan.objcexport
 
-import org.jetbrains.kotlin.analyzer.ModuleInfo
 import org.jetbrains.kotlin.backend.konan.cKeywords
 import org.jetbrains.kotlin.backend.konan.descriptors.isArray
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
@@ -17,12 +16,29 @@ import org.jetbrains.kotlin.load.kotlin.PackagePartClassUtils
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.psi.*
+import org.jetbrains.kotlin.psi.psiUtil.getStrictParentOfType
 import org.jetbrains.kotlin.resolve.descriptorUtil.isSubclassOf
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
 import org.jetbrains.kotlin.resolve.source.PsiSourceFile
 
+internal interface ObjCExportNameTranslator {
+    fun getFileClassName(file: KtFile): ObjCExportNamer.ClassOrProtocolName
+
+    fun getCategoryName(file: KtFile): String
+
+    fun getClassOrProtocolName(
+            ktClassOrObject: KtClassOrObject
+    ): ObjCExportNamer.ClassOrProtocolName
+}
+
 interface ObjCExportNamer {
     data class ClassOrProtocolName(val swiftName: String, val objCName: String, val binaryName: String = objCName)
+
+    interface Configuration {
+        val topLevelNamePrefix: String
+        fun getAdditionalPrefix(module: ModuleDescriptor): String?
+        val objcGenerics: Boolean
+    }
 
     fun getFileClassName(file: SourceFile): ClassOrProtocolName
     fun getClassOrProtocolName(descriptor: ClassDescriptor): ClassOrProtocolName
@@ -31,6 +47,7 @@ interface ObjCExportNamer {
     fun getPropertyName(property: PropertyDescriptor): String
     fun getObjectInstanceSelector(descriptor: ClassDescriptor): String
     fun getEnumEntrySelector(descriptor: ClassDescriptor): String
+    fun getTypeParameterName(typeParameterDescriptor: TypeParameterDescriptor): String
 
     fun numberBoxName(classId: ClassId): ClassOrProtocolName
 
@@ -51,21 +68,131 @@ fun createNamer(
 ): ObjCExportNamer = ObjCExportNamerImpl(
         (exportedDependencies + moduleDescriptor).toSet(),
         moduleDescriptor.builtIns,
-        ObjCExportMapper(),
+        ObjCExportMapper(local = true),
         topLevelNamePrefix,
         local = true
 )
 
+// Note: this class duplicates some of ObjCExportNamerImpl logic,
+// but operates on different representation.
+internal open class ObjCExportNameTranslatorImpl(
+        configuration: ObjCExportNamer.Configuration
+) : ObjCExportNameTranslator {
+
+    private val helper = ObjCExportNamingHelper(configuration.topLevelNamePrefix)
+
+    override fun getFileClassName(file: KtFile): ObjCExportNamer.ClassOrProtocolName =
+            helper.getFileClassName(file)
+
+    override fun getCategoryName(file: KtFile): String =
+            helper.translateFileName(file)
+
+    override fun getClassOrProtocolName(
+            ktClassOrObject: KtClassOrObject
+    ): ObjCExportNamer.ClassOrProtocolName = helper.swiftClassNameToObjC(
+            getClassOrProtocolSwiftName(ktClassOrObject)
+    )
+
+    private fun getClassOrProtocolSwiftName(
+            ktClassOrObject: KtClassOrObject
+    ): String = buildString {
+        val ownName = ktClassOrObject.name!!.toIdentifier()
+        val outerClass = ktClassOrObject.getStrictParentOfType<KtClassOrObject>()
+        if (outerClass != null) {
+            append(getClassOrProtocolSwiftName(outerClass))
+
+            val importAsMember = when {
+                // FIXME: generics.
+
+                ktClassOrObject.isInterface || outerClass.isInterface -> {
+                    // Swift doesn't support neither nested nor outer protocols.
+                    false
+                }
+
+                this.contains('.') -> {
+                    // Swift doesn't support swift_name with deeply nested names.
+                    // It seems to support "OriginalObjCName.SwiftName" though,
+                    // but this doesn't seem neither documented nor reliable.
+                    false
+                }
+
+                else -> true
+            }
+
+            if (importAsMember) {
+                append(".").append(ownName)
+            } else {
+                append(ownName.capitalize())
+            }
+        } else {
+            append(ownName)
+        }
+    }
+}
+
+private class ObjCExportNamingHelper(
+        private val topLevelNamePrefix: String
+) {
+
+    fun translateFileName(fileName: String): String =
+            PackagePartClassUtils.getFilePartShortName(fileName).toIdentifier()
+
+    fun translateFileName(file: KtFile): String = translateFileName(file.name)
+
+    fun getFileClassName(fileName: String): ObjCExportNamer.ClassOrProtocolName {
+        val baseName = translateFileName(fileName)
+        return ObjCExportNamer.ClassOrProtocolName(swiftName = baseName, objCName = "$topLevelNamePrefix$baseName")
+    }
+
+    fun swiftClassNameToObjC(swiftName: String): ObjCExportNamer.ClassOrProtocolName =
+            ObjCExportNamer.ClassOrProtocolName(swiftName, buildString {
+                append(topLevelNamePrefix)
+                swiftName.split('.').forEachIndexed { index, part ->
+                    append(if (index == 0) part else part.capitalize())
+                }
+            })
+
+    fun getFileClassName(file: KtFile): ObjCExportNamer.ClassOrProtocolName =
+            getFileClassName(file.name)
+}
+
 internal class ObjCExportNamerImpl(
-        private val moduleDescriptors: Set<ModuleDescriptor>,
+        private val configuration: ObjCExportNamer.Configuration,
         builtIns: KotlinBuiltIns,
         private val mapper: ObjCExportMapper,
-        private val topLevelNamePrefix: String,
         private val local: Boolean
 ) : ObjCExportNamer {
 
+    constructor(
+            moduleDescriptors: Set<ModuleDescriptor>,
+            builtIns: KotlinBuiltIns,
+            mapper: ObjCExportMapper,
+            topLevelNamePrefix: String,
+            local: Boolean,
+            objcGenerics: Boolean = false
+    ) : this(
+            object : ObjCExportNamer.Configuration {
+                override val topLevelNamePrefix: String
+                    get() = topLevelNamePrefix
+
+                override fun getAdditionalPrefix(module: ModuleDescriptor): String? =
+                        if (module in moduleDescriptors) null else module.namePrefix
+
+                override val objcGenerics: Boolean
+                    get() = objcGenerics
+
+            },
+            builtIns,
+            mapper,
+            local
+    )
+
     private fun String.toUnmangledClassOrProtocolName(): ObjCExportNamer.ClassOrProtocolName =
             ObjCExportNamer.ClassOrProtocolName(swiftName = this, objCName = this)
+
+    private val objcGenerics get() = configuration.objcGenerics
+    private val topLevelNamePrefix get() = configuration.topLevelNamePrefix
+    private val helper = ObjCExportNamingHelper(configuration.topLevelNamePrefix)
 
     private fun String.toSpecialStandardClassOrProtocolName() = ObjCExportNamer.ClassOrProtocolName(
             swiftName = "Kotlin$this",
@@ -122,6 +249,8 @@ internal class ObjCExportNamerImpl(
     // Classes and protocols share the same namespace in Swift.
     private val swiftClassAndProtocolNames = GlobalNameMapping<Any, String>()
 
+    private val genericTypeParameterNameMapping = GenericTypeParameterNameMapping()
+
     private abstract inner class ClassPropertyNameMapping<T : Any> : Mapping<T, String>() {
 
         // Try to avoid clashing with NSObject class methods:
@@ -147,7 +276,7 @@ internal class ObjCExportNamerImpl(
     }
 
     override fun getFileClassName(file: SourceFile): ObjCExportNamer.ClassOrProtocolName {
-        val baseName by lazy {
+        val candidate by lazy {
             val fileName = when (file) {
                 is PsiSourceFile -> {
                     val psiFile = file.psiFile
@@ -156,34 +285,25 @@ internal class ObjCExportNamerImpl(
                 }
                 else -> file.name ?: error("$file has no name")
             }
-            PackagePartClassUtils.getFilePartShortName(fileName)
+            helper.getFileClassName(fileName)
         }
 
         val objCName = objCClassNames.getOrPut(file) {
-            StringBuilder(topLevelNamePrefix).append(baseName)
-                    .mangledBySuffixUnderscores()
+            StringBuilder(candidate.objCName).mangledBySuffixUnderscores()
         }
 
         val swiftName = swiftClassAndProtocolNames.getOrPut(file) {
-            StringBuilder(baseName)
-                    .mangledBySuffixUnderscores()
+            StringBuilder(candidate.swiftName).mangledBySuffixUnderscores()
         }
 
         return ObjCExportNamer.ClassOrProtocolName(swiftName = swiftName, objCName = objCName)
     }
 
-    private val predefinedClassNames = mapOf(
-            builtIns.any to kotlinAnyName,
-            builtIns.mutableSet to mutableSetName,
-            builtIns.mutableMap to mutableMapName
-    )
-
     override fun getClassOrProtocolName(descriptor: ClassDescriptor): ObjCExportNamer.ClassOrProtocolName =
-            predefinedClassNames[descriptor]
-                    ?: ObjCExportNamer.ClassOrProtocolName(
-                            swiftName = getClassOrProtocolSwiftName(descriptor),
-                            objCName = getClassOrProtocolObjCName(descriptor)
-                    )
+            ObjCExportNamer.ClassOrProtocolName(
+                    swiftName = getClassOrProtocolSwiftName(descriptor),
+                    objCName = getClassOrProtocolObjCName(descriptor)
+            )
 
     private fun getClassOrProtocolSwiftName(
             descriptor: ClassDescriptor
@@ -194,6 +314,8 @@ internal class ObjCExportNamerImpl(
                 append(getClassOrProtocolSwiftName(containingDeclaration))
 
                 val importAsMember = when {
+                    objcGenerics && descriptor.hasGenericsInHierarchy() -> false
+
                     descriptor.isInterface || containingDeclaration.isInterface -> {
                         // Swift doesn't support neither nested nor outer protocols.
                         false
@@ -208,10 +330,11 @@ internal class ObjCExportNamerImpl(
 
                     else -> true
                 }
+                val ownName = descriptor.name.asString().toIdentifier()
                 if (importAsMember) {
-                    append(".").append(descriptor.name.asString())
+                    append(".").append(ownName)
                 } else {
-                    append(descriptor.name.asString().capitalize())
+                    append(ownName.capitalize())
                 }
             } else if (containingDeclaration is PackageFragmentDescriptor) {
                 appendTopLevelClassBaseName(descriptor)
@@ -221,6 +344,22 @@ internal class ObjCExportNamerImpl(
         }.mangledBySuffixUnderscores()
     }
 
+    private fun ClassDescriptor.hasGenericsInHierarchy(): Boolean {
+        fun ClassDescriptor.hasGenericsChildren(): Boolean =
+                unsubstitutedMemberScope.getContributedDescriptors()
+                        .asSequence()
+                        .filterIsInstance<ClassDescriptor>()
+                        .any {
+                            it.typeConstructor.parameters.isNotEmpty() ||
+                                    it.hasGenericsChildren()
+                        }
+
+        val upGenerics = generateSequence(this) { it.containingDeclaration as? ClassDescriptor }
+                .any { it.typeConstructor.parameters.isNotEmpty() }
+
+        return upGenerics || hasGenericsChildren()
+    }
+
     private fun getClassOrProtocolObjCName(descriptor: ClassDescriptor): String {
         val objCMapping = if (descriptor.isInterface) objCProtocolNames else objCClassNames
         return objCMapping.getOrPut(descriptor) {
@@ -228,7 +367,7 @@ internal class ObjCExportNamerImpl(
                 val containingDeclaration = descriptor.containingDeclaration
                 if (containingDeclaration is ClassDescriptor) {
                     append(getClassOrProtocolObjCName(containingDeclaration))
-                            .append(descriptor.name.asString().capitalize())
+                            .append(descriptor.name.asString().toIdentifier().capitalize())
 
                 } else if (containingDeclaration is PackageFragmentDescriptor) {
                     append(topLevelNamePrefix).appendTopLevelClassBaseName(descriptor)
@@ -240,14 +379,16 @@ internal class ObjCExportNamerImpl(
     }
 
     private fun StringBuilder.appendTopLevelClassBaseName(descriptor: ClassDescriptor) = apply {
-        if (descriptor.module !in moduleDescriptors) {
-            append(descriptor.module.namePrefix)
+        configuration.getAdditionalPrefix(descriptor.module)?.let {
+            append(it)
         }
-        append(descriptor.name.asString())
+        append(descriptor.name.asString().toIdentifier())
     }
 
     override fun getSelector(method: FunctionDescriptor): String = methodSelectors.getOrPut(method) {
         assert(mapper.isBaseMethod(method))
+
+        getPredefined(method, Predefined.anyMethodSelectors)?.let { return it }
 
         val parameters = mapper.bridgeMethod(method).valueParametersAssociated(method)
 
@@ -262,7 +403,7 @@ internal class ObjCExportNamerImpl(
                             1 -> ""
                             else -> "value"
                         }
-                        else -> it!!.name.asString()
+                        else -> it!!.name.asString().toIdentifier()
                     }
                     MethodBridgeValueParameter.ErrorOutParameter -> "error"
                     is MethodBridgeValueParameter.KotlinResultOutParameter -> "result"
@@ -297,6 +438,8 @@ internal class ObjCExportNamerImpl(
     override fun getSwiftName(method: FunctionDescriptor): String = methodSwiftNames.getOrPut(method) {
         assert(mapper.isBaseMethod(method))
 
+        getPredefined(method, Predefined.anyMethodSwiftNames)?.let { return it }
+
         val parameters = mapper.bridgeMethod(method).valueParametersAssociated(method)
 
         StringBuilder().apply {
@@ -311,7 +454,7 @@ internal class ObjCExportNamerImpl(
                             1 -> "_"
                             else -> "value"
                         }
-                        else -> it!!.name.asString()
+                        else -> it!!.name.asString().toIdentifier()
                     }
                     MethodBridgeValueParameter.ErrorOutParameter -> continue@parameters
                     is MethodBridgeValueParameter.KotlinResultOutParameter -> "result"
@@ -329,12 +472,20 @@ internal class ObjCExportNamerImpl(
         }
     }
 
+    private fun <T : Any> getPredefined(method: FunctionDescriptor, predefinedForAny: Map<Name, T>): T? {
+        return if (method.containingDeclaration.let { it is ClassDescriptor && KotlinBuiltIns.isAny(it) }) {
+            predefinedForAny.getValue(method.name)
+        } else {
+            null
+        }
+    }
+
     override fun getPropertyName(property: PropertyDescriptor): String = propertyNames.getOrPut(property) {
         assert(mapper.isBaseProperty(property))
         assert(mapper.isObjCProperty(property))
 
         StringBuilder().apply {
-            append(property.name.asString())
+            append(property.name.asString().toIdentifier())
         }.mangledSequence {
             append('_')
         }
@@ -344,7 +495,7 @@ internal class ObjCExportNamerImpl(
         assert(descriptor.kind == ClassKind.OBJECT)
 
         return objectInstanceSelectors.getOrPut(descriptor) {
-            val name = descriptor.name.asString().decapitalize().mangleIfSpecialFamily("get")
+            val name = descriptor.name.asString().decapitalize().toIdentifier().mangleIfSpecialFamily("get")
 
             StringBuilder(name).mangledBySuffixUnderscores()
         }
@@ -358,38 +509,69 @@ internal class ObjCExportNamerImpl(
             val name = descriptor.name.asString().split('_').mapIndexed { index, s ->
                 val lower = s.toLowerCase()
                 if (index == 0) lower else lower.capitalize()
-            }.joinToString("").mangleIfSpecialFamily("the")
+            }.joinToString("").toIdentifier().mangleIfSpecialFamily("the")
 
             StringBuilder(name).mangledBySuffixUnderscores()
         }
     }
 
+    override fun getTypeParameterName(typeParameterDescriptor: TypeParameterDescriptor): String {
+        return genericTypeParameterNameMapping.getOrPut(typeParameterDescriptor) {
+            StringBuilder().apply {
+                append(typeParameterDescriptor.name.asString().toIdentifier())
+            }.mangledSequence {
+                append('_')
+            }
+        }
+    }
+
     init {
+        if (!local) {
+            forceAssignPredefined(builtIns)
+        }
+    }
+
+    private fun forceAssignPredefined(builtIns: KotlinBuiltIns) {
         val any = builtIns.any
+
+        val predefinedClassNames = mapOf(
+                builtIns.any to kotlinAnyName,
+                builtIns.mutableSet to mutableSetName,
+                builtIns.mutableMap to mutableMapName
+        )
 
         predefinedClassNames.forEach { descriptor, name ->
             objCClassNames.forceAssign(descriptor, name.objCName)
             swiftClassAndProtocolNames.forceAssign(descriptor, name.swiftName)
         }
 
-        fun ClassDescriptor.method(name: String) =
+        fun ClassDescriptor.method(name: Name) =
                 this.unsubstitutedMemberScope.getContributedFunctions(
-                        Name.identifier(name),
+                        name,
                         NoLookupLocation.FROM_BACKEND
                 ).single()
 
-        val hashCode = any.method("hashCode")
-        val toString = any.method("toString")
-        val equals = any.method("equals")
+        Predefined.anyMethodSelectors.forEach { name, selector ->
+            methodSelectors.forceAssign(any.method(name), selector)
+        }
 
-        methodSelectors.forceAssign(hashCode, "hash")
-        methodSwiftNames.forceAssign(hashCode, "hash()")
+        Predefined.anyMethodSwiftNames.forEach { name, swiftName ->
+            methodSwiftNames.forceAssign(any.method(name), swiftName)
+        }
+    }
 
-        methodSelectors.forceAssign(toString, "description")
-        methodSwiftNames.forceAssign(toString, "description()")
+    private object Predefined {
+        val anyMethodSelectors = mapOf(
+                "hashCode" to "hash",
+                "toString" to "description",
+                "equals" to "isEqual:"
+        ).mapKeys { Name.identifier(it.key) }
 
-        methodSelectors.forceAssign(equals, "isEqual:")
-        methodSwiftNames.forceAssign(equals, "isEqual(:)")
+        val anyMethodSwiftNames = mapOf(
+                "hashCode" to "hash()",
+                "toString" to "description()",
+                "equals" to "isEqual(_:)"
+        ).mapKeys { Name.identifier(it.key) }
     }
 
     private fun FunctionDescriptor.getMangledName(forSwift: Boolean): String {
@@ -401,7 +583,7 @@ internal class ObjCExportNamerImpl(
             is PropertyGetterDescriptor -> this.correspondingProperty.name.asString()
             is PropertySetterDescriptor -> "set${this.correspondingProperty.name.asString().capitalize()}"
             else -> this.name.asString()
-        }
+        }.toIdentifier()
 
         return candidate.mangleIfSpecialFamily("do")
     }
@@ -424,14 +606,15 @@ internal class ObjCExportNamerImpl(
     private fun String.startsWithWords(words: String) = this.startsWith(words) &&
             (this.length == words.length || !this[words.length].isLowerCase())
 
-    private abstract inner class Mapping<in T : Any, N>() {
-        private val elementToName = mutableMapOf<T, N>()
-        private val nameToElements = mutableMapOf<N, MutableList<T>>()
+    private inner class GenericTypeParameterNameMapping {
+        private val elementToName = mutableMapOf<TypeParameterDescriptor, String>()
+        private val typeParameterNameClassOverrides = mutableMapOf<ClassDescriptor, MutableSet<String>>()
 
-        abstract fun conflict(first: T, second: T): Boolean
-        open fun reserved(name: N) = false
+        fun reserved(name: String): Boolean {
+            return name in reservedNames
+        }
 
-        fun getOrPut(element: T, nameCandidates: () -> Sequence<N>): N {
+        fun getOrPut(element: TypeParameterDescriptor, nameCandidates: () -> Sequence<String>): String {
             getIfAssigned(element)?.let { return it }
 
             nameCandidates().forEach {
@@ -442,6 +625,65 @@ internal class ObjCExportNamerImpl(
 
             error("name candidates run out")
         }
+
+        private fun tryAssign(element: TypeParameterDescriptor, name: String): Boolean {
+            if (element in elementToName) error(element)
+
+            if (reserved(name)) return false
+
+            if (!validName(element, name)) return false
+
+            assignName(element, name)
+
+            return true
+        }
+
+        private fun assignName(element: TypeParameterDescriptor, name: String) {
+            if (!local) {
+                elementToName[element] = name
+            }
+            classNameSet(element).add(name)
+        }
+
+        private fun validName(element: TypeParameterDescriptor, name: String): Boolean {
+            assert(element.containingDeclaration is ClassDescriptor)
+
+            val nameSet = classNameSet(element)
+            return !objCClassNames.nameExists(name) && !objCProtocolNames.nameExists(name) && name !in nameSet
+        }
+
+        private fun classNameSet(element: TypeParameterDescriptor): MutableSet<String> {
+            return typeParameterNameClassOverrides.getOrPut(element.containingDeclaration as ClassDescriptor) {
+                mutableSetOf()
+            }
+        }
+
+        private fun getIfAssigned(element: TypeParameterDescriptor): String? = elementToName[element]
+
+        private val reservedNames = setOf("id", "NSObject", "NSArray", "NSCopying", "NSNumber", "NSInteger",
+                "NSUInteger", "NSString", "NSSet", "NSDictionary", "NSMutableArray", "int", "unsigned", "short",
+                "char", "long", "float", "double", "int32_t", "int64_t", "int16_t", "int8_t", "unichar")
+    }
+
+    private abstract inner class Mapping<in T : Any, N>() {
+        private val elementToName = mutableMapOf<T, N>()
+        private val nameToElements = mutableMapOf<N, MutableList<T>>()
+
+        abstract fun conflict(first: T, second: T): Boolean
+        open fun reserved(name: N) = false
+        inline fun getOrPut(element: T, nameCandidates: () -> Sequence<N>): N {
+            getIfAssigned(element)?.let { return it }
+
+            nameCandidates().forEach {
+                if (tryAssign(element, it)) {
+                    return it
+                }
+            }
+
+            error("name candidates run out")
+        }
+
+        fun nameExists(name: N) = nameToElements.containsKey(name)
 
         private fun getIfAssigned(element: T): N? = elementToName[element]
 
@@ -563,20 +805,40 @@ private fun ObjCExportMapper.canHaveSameName(first: PropertyDescriptor, second: 
         return false
     }
 
+    if (first.name != second.name) {
+        return false
+    }
+
     return bridgePropertyType(first) == bridgePropertyType(second)
 }
 
 internal val ModuleDescriptor.namePrefix: String get() {
     if (this.isKonanStdlib()) return "Kotlin"
 
-    // <fooBar> -> FooBar
-    val moduleName = this.name.asString()
-        .let { it.substring(1, it.lastIndex) }
-        .capitalize()
-        .replace('-', '_')
+    return abbreviate(this.name.asString().let { it.substring(1, it.lastIndex) })
+}
 
-    val uppers = moduleName.filterIndexed { index, character -> index == 0 || character.isUpperCase() }
+internal fun abbreviate(name: String): String {
+    val normalizedName = name
+            .capitalize()
+            .replace('-', '_')
+
+    val uppers = normalizedName.filterIndexed { index, character -> index == 0 || character.isUpperCase() }
     if (uppers.length >= 3) return uppers
 
-    return moduleName
+    return normalizedName
 }
+
+// Note: most usages of this method rely on the fact that concatenation of valid identifiers is valid identifier.
+// This may sometimes be a bit conservative (since it requires mangling non-first character as if it was first);
+// ignore this for simplicity as having Kotlin identifiers starting from digits is supposed to be rare case.
+internal fun String.toValidObjCSwiftIdentifier(): String {
+    if (this.isEmpty()) return "__"
+
+    return this.replace('$', '_') // TODO: handle more special characters.
+            .let { if (it.first().isDigit()) "_$it" else it }
+            .let { if (it == "_") "__" else it }
+}
+
+// Private shortcut.
+private fun String.toIdentifier(): String = this.toValidObjCSwiftIdentifier()

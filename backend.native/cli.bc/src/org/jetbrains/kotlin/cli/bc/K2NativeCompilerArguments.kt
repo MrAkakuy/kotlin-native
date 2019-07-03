@@ -5,7 +5,6 @@
 
 package org.jetbrains.kotlin.cli.bc
 
-import org.jetbrains.kotlin.backend.konan.TestRunnerKind
 import org.jetbrains.kotlin.cli.common.arguments.CommonCompilerArguments
 import org.jetbrains.kotlin.cli.common.arguments.Argument
 import org.jetbrains.kotlin.cli.common.messages.MessageCollector
@@ -48,7 +47,10 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = "-manifest", valueDescription = "<path>", description = "Provide a maniferst addend file")
     var manifestFile: String? = null
 
-    @Argument(value="-module-name", deprecatedName = "-module_name", valueDescription = "<name>", description = "Spicify a name for the compilation module")
+    @Argument(value="-memory-model", valueDescription = "<model>", description = "Memory model to use, 'strict' and 'relaxed' are currently supported")
+    var memoryModel: String? = "strict"
+
+    @Argument(value="-module-name", deprecatedName = "-module_name", valueDescription = "<name>", description = "Specify a name for the compilation module")
     var moduleName: String? = null
 
     @Argument(value = "-native-library", deprecatedName = "-nativelibrary", shortName = "-nl", valueDescription = "<path>", description = "Include the native bitcode library")
@@ -108,6 +110,9 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = EMBED_BITCODE_MARKER_FLAG, description = "Embed placeholder LLVM IR data as a marker")
     var embedBitcodeMarker: Boolean = false
 
+    @Argument(value = "-Xemit-lazy-objc-header", description = "")
+    var emitLazyObjCHeader: String? = null
+
     @Argument(value = "-Xenable", deprecatedName = "--enable", valueDescription = "<Phase>", description = "Enable backend phase")
     var enablePhases: Array<String>? = null
 
@@ -118,6 +123,13 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
                     "Must be the path of a library passed with '-library'"
     )
     var exportedLibraries: Array<String>? = null
+
+    @Argument(
+            value = "-Xframework-import-header",
+            valueDescription = "<header>",
+            description = "Add additional header import to framework header"
+    )
+    var frameworkImportHeaders: Array<String>? = null
 
     @Argument(value = "-Xprint-bitcode", deprecatedName = "--print_bitcode", description = "Print llvm bitcode")
     var printBitCode: Boolean = false
@@ -145,9 +157,6 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
 
     @Argument(value = "-Xtemporary-files-dir", deprecatedName = "--temporary_files_dir", valueDescription = "<path>", description = "Save temporary files to the given directory")
     var temporaryFilesDir: String? = null
-
-    @Argument(value = "-Xtime", deprecatedName = "--time", description = "Report execution time for compiler phases")
-    var timePhases: Boolean = false
 
     @Argument(value = "-Xverify-bitcode", deprecatedName = "--verify_bitcode", description = "Verify llvm bitcode after each method")
     var verifyBitCode: Boolean = false
@@ -181,10 +190,15 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = "-Xcoverage-file", valueDescription = "<path>", description = "Save coverage information to the given file")
     var coverageFile: String? = null
 
+    @Argument(value = "-Xobjc-generics", description = "Enable experimental generics support for framework header")
+    var objcGenerics: Boolean = false
+
     override fun configureAnalysisFlags(collector: MessageCollector): MutableMap<AnalysisFlag<*>, Any> =
             super.configureAnalysisFlags(collector).also {
                 val useExperimental = it[AnalysisFlags.useExperimental] as List<*>
                 it[AnalysisFlags.useExperimental] = useExperimental + listOf("kotlin.ExperimentalUnsignedTypes")
+                if (printIr)
+                    phasesToDumpAfter = arrayOf("ALL")
             }
 }
 

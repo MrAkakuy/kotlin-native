@@ -11,18 +11,22 @@ import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.allOverriddenDescriptors
 import org.jetbrains.kotlin.backend.konan.descriptors.isArray
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
-import org.jetbrains.kotlin.builtins.KotlinBuiltIns
-import org.jetbrains.kotlin.builtins.PrimitiveType
-import org.jetbrains.kotlin.builtins.UnsignedType
+import org.jetbrains.kotlin.builtins.*
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.name.ClassId
+import org.jetbrains.kotlin.resolve.deprecation.Deprecation
+import org.jetbrains.kotlin.resolve.deprecation.DeprecationLevelValue
+import org.jetbrains.kotlin.resolve.deprecation.DeprecationResolver
 import org.jetbrains.kotlin.resolve.descriptorUtil.*
 import org.jetbrains.kotlin.types.KotlinType
 import org.jetbrains.kotlin.types.TypeUtils
 import org.jetbrains.kotlin.types.typeUtil.isNothing
 import org.jetbrains.kotlin.types.typeUtil.isUnit
 
-internal class ObjCExportMapper {
+internal class ObjCExportMapper(
+        internal val deprecationResolver: DeprecationResolver? = null,
+        private val local: Boolean = false
+) {
     companion object {
         val maxFunctionTypeParameterCount get() = KONAN_FUNCTION_INTERFACES_MAX_PARAMETERS
     }
@@ -38,8 +42,12 @@ internal class ObjCExportMapper {
 
     private val methodBridgeCache = mutableMapOf<FunctionDescriptor, MethodBridge>()
 
-    fun bridgeMethod(descriptor: FunctionDescriptor): MethodBridge = methodBridgeCache.getOrPut(descriptor) {
+    fun bridgeMethod(descriptor: FunctionDescriptor): MethodBridge = if (local) {
         bridgeMethodImpl(descriptor)
+    } else {
+        methodBridgeCache.getOrPut(descriptor) {
+            bridgeMethodImpl(descriptor)
+        }
     }
 }
 
@@ -48,6 +56,10 @@ internal fun ObjCExportMapper.getClassIfCategory(descriptor: CallableMemberDescr
 
     val extensionReceiverType = descriptor.extensionReceiverParameter?.type ?: return null
 
+    return getClassIfCategory(extensionReceiverType)
+}
+
+internal fun ObjCExportMapper.getClassIfCategory(extensionReceiverType: KotlinType): ClassDescriptor? {
     // FIXME: this code must rely on type mapping instead of copying its logic.
 
     if (extensionReceiverType.isObjCObjectType()) return null
@@ -61,17 +73,68 @@ internal fun ObjCExportMapper.getClassIfCategory(descriptor: CallableMemberDescr
     }
 }
 
+// Note: partially duplicated in ObjCExportLazyImpl.translateTopLevels.
 internal fun ObjCExportMapper.shouldBeExposed(descriptor: CallableMemberDescriptor): Boolean =
-        descriptor.isEffectivelyPublicApi && !descriptor.isSuspend && !descriptor.isExpect
+        descriptor.isEffectivelyPublicApi && !descriptor.isSuspend && !descriptor.isExpect &&
+                !isHiddenByDeprecation(descriptor)
 
 internal fun ObjCExportMapper.shouldBeExposed(descriptor: ClassDescriptor): Boolean =
-        shouldBeVisible(descriptor) && !descriptor.defaultType.isObjCObjectType()
+        shouldBeVisible(descriptor) && !isSpecialMapped(descriptor) && !descriptor.defaultType.isObjCObjectType()
 
+private fun ObjCExportMapper.isHiddenByDeprecation(descriptor: CallableMemberDescriptor): Boolean {
+    // Note: ObjCExport generally expect overrides of exposed methods to be exposed.
+    // So don't hide a "deprecated hidden" method which overrides non-hidden one:
+    if (deprecationResolver != null && deprecationResolver.isDeprecatedHidden(descriptor) &&
+            descriptor.overriddenDescriptors.all { isHiddenByDeprecation(it) }) {
+        return true
+    }
+
+    // Note: ObjCExport expects members of unexposed classes to be unexposed too.
+    // So hide a declaration if it is from a hidden class:
+    val containingDeclaration = descriptor.containingDeclaration
+    if (containingDeclaration is ClassDescriptor && isHiddenByDeprecation(containingDeclaration)) {
+        return true
+    }
+
+    return false
+}
+
+internal fun ObjCExportMapper.getDeprecation(descriptor: DeclarationDescriptor): Deprecation? {
+    deprecationResolver?.getDeprecations(descriptor).orEmpty().maxBy {
+        when (it.deprecationLevel) {
+            DeprecationLevelValue.WARNING -> 1
+            DeprecationLevelValue.ERROR -> 2
+            DeprecationLevelValue.HIDDEN -> 3
+        }
+    }?.let { return it }
+
+    (descriptor as? ConstructorDescriptor)?.let {
+        // Note: a deprecation can't be applied to a class itself when generating header
+        // since the class can be referred from the header.
+        // Apply class deprecations to its constructors instead:
+        return getDeprecation(it.constructedClass)
+    }
+
+    return null
+}
+
+private tailrec fun ObjCExportMapper.isHiddenByDeprecation(descriptor: ClassDescriptor): Boolean {
+    if (deprecationResolver == null) return false
+    if (deprecationResolver.isDeprecatedHidden(descriptor)) return true
+
+    val superClass = descriptor.getSuperClassNotAny() ?: return false
+
+    // Note: ObjCExport requires super class of exposed class to be exposed.
+    // So hide a class if its super class is hidden:
+    return isHiddenByDeprecation(superClass)
+}
+
+// Note: the logic is partially duplicated in ObjCExportLazyImpl.translateClasses.
 internal fun ObjCExportMapper.shouldBeVisible(descriptor: ClassDescriptor): Boolean =
         descriptor.isEffectivelyPublicApi && when (descriptor.kind) {
         ClassKind.CLASS, ClassKind.INTERFACE, ClassKind.ENUM_CLASS, ClassKind.OBJECT -> true
         ClassKind.ENUM_ENTRY, ClassKind.ANNOTATION_CLASS -> false
-    } && !descriptor.isExpect && !isSpecialMapped(descriptor) && !descriptor.isInlined()
+    } && !descriptor.isExpect && !descriptor.isInlined() && !isHiddenByDeprecation(descriptor)
 
 private fun ObjCExportMapper.isBase(descriptor: CallableMemberDescriptor): Boolean =
         descriptor.overriddenDescriptors.all { !shouldBeExposed(it) }
@@ -114,7 +177,9 @@ internal fun ObjCExportMapper.doesThrow(method: FunctionDescriptor): Boolean = m
     it.overriddenDescriptors.isEmpty() && it.annotations.hasAnnotation(KonanFqNames.throws)
 }
 
-private fun ObjCExportMapper.bridgeType(kotlinType: KotlinType): TypeBridge = kotlinType.unwrapToPrimitiveOrReference(
+private fun ObjCExportMapper.bridgeType(
+        kotlinType: KotlinType
+): TypeBridge = kotlinType.unwrapToPrimitiveOrReference<TypeBridge>(
         eachInlinedClass = { inlinedClass, _ ->
             when (inlinedClass.classId) {
                 UnsignedType.UBYTE.classId -> return ValueTypeBridge(ObjCValueType.UNSIGNED_CHAR)
@@ -138,9 +203,25 @@ private fun ObjCExportMapper.bridgeType(kotlinType: KotlinType): TypeBridge = ko
             ValueTypeBridge(objCValueType)
         },
         ifReference = {
-            ReferenceBridge
+            if (kotlinType.isFunctionType) {
+                bridgeFunctionType(kotlinType)
+            } else {
+                ReferenceBridge
+            }
         }
 )
+
+private fun ObjCExportMapper.bridgeFunctionType(kotlinType: KotlinType): TypeBridge {
+    // kotlinType.arguments include return type: <P1, P2, ..., Pn, R>
+    val numberOfParameters = kotlinType.arguments.size - 1
+
+    val returnType = kotlinType.getReturnTypeFromFunctionType()
+    val returnsVoid = returnType.isUnit() || returnType.isNothing()
+    // Note: this is correct because overriding method can't turn this into false
+    // neither for a parameter nor for a return type.
+
+    return BlockPointerBridge(numberOfParameters, returnsVoid)
+}
 
 private fun ObjCExportMapper.bridgeParameter(parameter: ParameterDescriptor): MethodBridgeValueParameter =
         MethodBridgeValueParameter.Mapped(bridgeType(parameter.type))

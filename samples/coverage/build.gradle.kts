@@ -1,7 +1,7 @@
 import org.jetbrains.kotlin.gradle.plugin.mpp.KotlinNativeTarget
 
 plugins {
-    id("org.jetbrains.kotlin.multiplatform")
+    kotlin("multiplatform")
 }
 
 kotlin {
@@ -23,10 +23,8 @@ kotlin {
         binaries {
             executable(listOf(DEBUG))
         }
-        binaries.getExecutable("test", DEBUG).apply {
-            freeCompilerArgs = mutableListOf(
-                    "-Xlibrary-to-cover=${compilations["main"].output.classesDirs.singleFile.absolutePath}"
-            )
+        binaries.getTest("DEBUG").apply {
+            freeCompilerArgs.add("-Xlibrary-to-cover=${compilations["main"].output.classesDirs.singleFile.absolutePath}")
         }
     }
 }

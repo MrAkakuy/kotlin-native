@@ -6,6 +6,7 @@
 package org.jetbrains.kotlin.backend.konan.objcexport
 
 import org.jetbrains.kotlin.backend.konan.Context
+import org.jetbrains.kotlin.backend.konan.KonanConfigKeys
 import org.jetbrains.kotlin.backend.konan.descriptors.getPackageFragments
 import org.jetbrains.kotlin.backend.konan.descriptors.isInterface
 import org.jetbrains.kotlin.backend.konan.getExportedDependencies
@@ -51,16 +52,18 @@ internal class ObjCExport(val context: Context, symbolTable: SymbolTable) {
         val produceFramework = context.config.produce == CompilerOutputKind.FRAMEWORK
 
         return if (produceFramework) {
-            val mapper = ObjCExportMapper()
+            val mapper = ObjCExportMapper(context.frontendServices.deprecationResolver)
             val moduleDescriptors = listOf(context.moduleDescriptor) + context.getExportedDependencies()
+            val objcGenerics = context.configuration.getBoolean(KonanConfigKeys.OBJC_GENERICS)
             val namer = ObjCExportNamerImpl(
                     moduleDescriptors.toSet(),
                     context.moduleDescriptor.builtIns,
                     mapper,
                     context.moduleDescriptor.namePrefix,
-                    local = false
+                    local = false,
+                    objcGenerics = objcGenerics
             )
-            val headerGenerator = ObjCExportHeaderGeneratorImpl(context, moduleDescriptors, mapper, namer)
+            val headerGenerator = ObjCExportHeaderGeneratorImpl(context, moduleDescriptors, mapper, namer, objcGenerics)
             headerGenerator.translateModule()
             headerGenerator.buildInterface()
         } else {

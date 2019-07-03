@@ -17,6 +17,7 @@ import org.jetbrains.kotlin.backend.konan.Context
 import org.jetbrains.kotlin.backend.konan.descriptors.resolveFakeOverride
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.config.languageVersionSettings
+import org.jetbrains.kotlin.descriptors.ValueDescriptor
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.irGet
@@ -25,9 +26,12 @@ import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrFunctionSymbol
+import org.jetbrains.kotlin.ir.symbols.IrValueSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrReturnableBlockSymbolImpl
+import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
+import org.jetbrains.kotlin.ir.visitors.IrElementVisitor
 import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.util.OperatorNameConventions
@@ -36,19 +40,26 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
 
     fun inline(irModule: IrModuleFragment) = irModule.accept(this, data = null)
 
-    override fun visitCall(expression: IrCall): IrExpression {
-        val callSite = super.visitCall(expression) as IrCall
-        if (!callSite.symbol.owner.needsInlining)
-            return callSite
-        if (Symbols.isLateinitIsInitializedPropertyGetter(callSite.symbol))
-            return callSite
+    override fun visitFunctionAccess(expression: IrFunctionAccessExpression): IrExpression {
+        expression.transformChildrenVoid(this)
+        val callee = when (expression) {
+            is IrCall -> expression.symbol.owner
+            is IrConstructorCall -> expression.symbol.owner
+            else -> return expression
+        }
+        if (!callee.needsInlining)
+            return expression
+        if (Symbols.isLateinitIsInitializedPropertyGetter(callee.symbol))
+            return expression
+        if (callee.isTypeOfIntrinsic())
+            return expression
 
-        val callee = getFunctionDeclaration(callSite.symbol)
+        val actualCallee = getFunctionDeclaration(callee.symbol)
 
-        callee.transformChildrenVoid(this)                            // Process recursive inline.
+        actualCallee.transformChildrenVoid(this)                            // Process recursive inline.
 
         val parent = allScopes.map { it.irElement }.filterIsInstance<IrDeclarationParent>().lastOrNull()
-        val inliner = Inliner(callSite, callee, currentScope!!, parent, context)
+        val inliner = Inliner(expression, actualCallee, currentScope!!, parent, context)
         return inliner.inline()
     }
 
@@ -63,7 +74,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
             descriptor.isBuiltInSuspendCoroutineUninterceptedOrReturn(languageVersionSettings) ->
                 context.ir.symbols.konanSuspendCoroutineUninterceptedOrReturn.owner
 
-            descriptor == context.ir.symbols.coroutineContextGetter ->
+            symbol == context.ir.symbols.coroutineContextGetter ->
                 context.ir.symbols.konanCoroutineContextGetter.owner
 
             else -> (symbol.owner as? IrSimpleFunction)?.resolveFakeOverride() ?: symbol.owner
@@ -76,7 +87,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
 
     private val IrFunction.needsInlining get() = isInlineConstructor || (this.isInline && !this.isExternal)
 
-    private inner class Inliner(val callSite: IrCall,
+    private inner class Inliner(val callSite: IrFunctionAccessExpression,
                                 val callee: IrFunction,
                                 val currentScope: ScopeWithIr,
                                 val parent: IrDeclarationParent?,
@@ -94,7 +105,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
             DeepCopyIrTreeWithSymbolsForInliner(context, typeArguments, parent)
         }
 
-        val substituteMap = mutableMapOf<IrValueParameter, IrExpression>()
+        val substituteMap = mutableMapOf<IrValueParameter, IrElement>()
 
         fun inline() = inlineFunction(callSite, callee)
 
@@ -109,7 +120,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
             }
         }
 
-        private fun inlineFunction(callSite: IrCall, callee: IrFunction): IrReturnableBlock {
+        private fun inlineFunction(callSite: IrFunctionAccessExpression, callee: IrFunction): IrReturnableBlock {
             val copiedCallee = copyIrElement.copy(callee) as IrFunction
 
             val evaluationStatements = evaluateArguments(callSite, copiedCallee)
@@ -118,7 +129,10 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
             val irReturnableBlockSymbol = IrReturnableBlockSymbolImpl(copiedCallee.descriptor.original)
             val startOffset = callee.startOffset
             val endOffset = callee.endOffset
-            val irBuilder = context.createIrBuilder(irReturnableBlockSymbol, startOffset, endOffset)
+            /* creates irBuilder appending to the end of the given returnable block: thus why we initialize
+             * irBuilder with (..., endOffset, endOffset).
+             */
+            val irBuilder = context.createIrBuilder(irReturnableBlockSymbol, endOffset, endOffset)
 
             if (callee.isInlineConstructor) {
                 // Copier sets parent to be the current function but
@@ -126,12 +140,13 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
                 val constructedClass = callee.parentAsClass
                 copiedCallee.parent = constructedClass
                 val delegatingConstructorCall = statements[0] as IrDelegatingConstructorCall
+                // TODO: Try use type parameters from callee.
                 irBuilder.run {
-                    val constructorCall = IrCallImpl(
+                    val constructorCall = IrConstructorCallImpl(
                             startOffset, endOffset,
                             callSite.type,
                             delegatingConstructorCall.symbol, delegatingConstructorCall.descriptor,
-                            constructedClass.typeParameters.size,
+                            constructedClass.typeParameters.size, 0,
                             delegatingConstructorCall.symbol.owner.valueParameters.size
                     ).apply {
                         delegatingConstructorCall.symbol.owner.valueParameters.forEach {
@@ -144,7 +159,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
                     val oldThis = constructedClass.thisReceiver!!
                     val newThis = currentScope.scope.createTemporaryVariableWithWrappedDescriptor(
                             irExpression = constructorCall,
-                            nameHint = constructedClass.fqNameSafe.toString() + ".this"
+                            nameHint = constructedClass.fqNameForIrSerialization.toString() + ".this"
                     )
                     statements[0] = newThis
                     substituteMap[oldThis] = irGet(newThis)
@@ -189,9 +204,13 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
             override fun visitGetValue(expression: IrGetValue): IrExpression {
                 val newExpression = super.visitGetValue(expression) as IrGetValue
                 val argument = substituteMap[newExpression.symbol.owner] ?: return newExpression
-
                 argument.transformChildrenVoid(this) // Default argument can contain subjects for substitution.
-                return copyIrElement.copy(argument) as IrExpression
+                return if (argument is IrVariable) {
+                    IrGetValueImpl(startOffset = newExpression.startOffset,
+                            endOffset = newExpression.endOffset,
+                            symbol = argument.symbol)
+
+                } else (copyIrElement.copy(argument) as IrExpression)
             }
 
             //-----------------------------------------------------------------//
@@ -216,11 +235,12 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
                     val unboundArgsSet = unboundFunctionParameters.toSet()
                     val valueParameters = expression.getArguments().drop(1) // Skip dispatch receiver.
 
-                    val immediateCall = IrCallImpl(
-                            expression.startOffset, expression.endOffset,
-                            expression.type,
-                            functionArgument.symbol, functionArgument.descriptor
-                    ).apply {
+                    val immediateCall = with(expression) {
+                        if (function is IrConstructor)
+                            IrConstructorCallImpl.fromSymbolOwner(startOffset, endOffset, type, function.symbol)
+                        else
+                            IrCallImpl(startOffset, endOffset, type, functionArgument.symbol)
+                    }.apply {
                         functionParameters.forEach {
                             val argument =
                                     if (!unboundArgsSet.contains(it))
@@ -237,7 +257,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
                         for (index in 0 until functionArgument.typeArgumentsCount)
                             putTypeArgument(index, functionArgument.getTypeArgument(index))
                     }
-                    return this@FunctionInlining.visitCall(super.visitCall(immediateCall) as IrCall)
+                    return this@FunctionInlining.visitExpression(super.visitExpression(immediateCall))
                 }
                 if (functionArgument !is IrBlock)
                     return super.visitCall(expression)
@@ -292,7 +312,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
 
         //-------------------------------------------------------------------------//
 
-        private fun buildParameterToArgument(callSite: IrCall, callee: IrFunction): List<ParameterToArgument> {
+        private fun buildParameterToArgument(callSite: IrFunctionAccessExpression, callee: IrFunction): List<ParameterToArgument> {
 
             val parameterToArgument = mutableListOf<ParameterToArgument>()
 
@@ -367,7 +387,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
 
         //-------------------------------------------------------------------------//
 
-        private fun evaluateArguments(callSite: IrCall, callee: IrFunction): List<IrStatement> {
+        private fun evaluateArguments(callSite: IrFunctionAccessExpression, callee: IrFunction): List<IrStatement> {
 
             val parameterToArgumentOld = buildParameterToArgument(callSite, callee)
             val evaluationStatements = mutableListOf<IrStatement>()
@@ -394,13 +414,7 @@ internal class FunctionInlining(val context: Context) : IrElementTransformerVoid
                         isMutable = false)
 
                 evaluationStatements.add(newVariable)
-                val getVal = IrGetValueImpl(
-                        startOffset = currentScope.irElement.startOffset,
-                        endOffset = currentScope.irElement.endOffset,
-                        type = newVariable.type,
-                        symbol = newVariable.symbol
-                )
-                substituteMap[it.parameter] = getVal
+                substituteMap[it.parameter] = newVariable
             }
             return evaluationStatements
         }

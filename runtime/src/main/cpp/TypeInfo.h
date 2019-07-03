@@ -27,6 +27,7 @@ struct WritableTypeInfo;
 #endif
 
 struct ObjHeader;
+struct AssociatedObjectTableRecord;
 
 // An element of sorted by hash in-place array representing methods.
 // For systems where introspection is not needed - only open methods are in
@@ -54,7 +55,8 @@ enum Konan_RuntimeType {
 enum Konan_TypeFlags {
   TF_IMMUTABLE = 1 << 0,
   TF_ACYCLIC   = 1 << 1,
-  TF_INTERFACE = 1 << 2
+  TF_INTERFACE = 1 << 2,
+  TF_OBJC_DYNAMIC = 1 << 3
 };
 
 enum Konan_MetaFlags {
@@ -113,6 +115,9 @@ struct TypeInfo {
 #if KONAN_TYPE_INFO_HAS_WRITABLE_PART
     WritableTypeInfo* writableInfo_;
 #endif
+
+    // Null-terminated array.
+    const AssociatedObjectTableRecord* associatedObjects;
 
     // vtable starts just after declared contents of the TypeInfo:
     // void* const vtable_[];

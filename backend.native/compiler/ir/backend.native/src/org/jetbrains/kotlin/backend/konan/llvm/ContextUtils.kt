@@ -16,8 +16,9 @@ import org.jetbrains.kotlin.descriptors.konan.CurrentKonanModuleOrigin
 import org.jetbrains.kotlin.descriptors.konan.DeserializedKonanModuleOrigin
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.util.file
-import org.jetbrains.kotlin.ir.util.fqNameSafe
+import org.jetbrains.kotlin.ir.util.fqNameForIrSerialization
 import org.jetbrains.kotlin.ir.util.isEffectivelyExternal
+import org.jetbrains.kotlin.ir.util.isReal
 import org.jetbrains.kotlin.konan.library.KonanLibrary
 import org.jetbrains.kotlin.konan.library.resolver.TopologicalLibraryOrder
 import org.jetbrains.kotlin.konan.target.KonanTarget
@@ -157,7 +158,7 @@ internal interface ContextUtils : RuntimeAware {
      * It may be declared as external function prototype.
      */
     val IrFunction.llvmFunction: LLVMValueRef
-    get() = llvmFunctionOrNull ?: error("$name in $file/${parent.fqNameSafe}")
+    get() = llvmFunctionOrNull ?: error("$name in $file/${parent.fqNameForIrSerialization}")
 
     val IrFunction.llvmFunctionOrNull: LLVMValueRef?
         get() {
@@ -259,7 +260,8 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
             throw IllegalArgumentException("function $name already exists")
         }
 
-        val externalFunction = LLVMGetNamedFunction(otherModule, name)!!
+        val externalFunction = LLVMGetNamedFunction(otherModule, name) ?:
+            throw Error("function $name not found")
 
         val functionType = getFunctionType(externalFunction)
         val function = LLVMAddFunction(llvmModule, name, functionType)!!
@@ -409,26 +411,28 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val runtimeFile = context.config.distribution.runtime(target)
     val runtime = Runtime(runtimeFile) // TODO: dispose
 
+    val targetTriple = runtime.target
+
     init {
         LLVMSetDataLayout(llvmModule, runtime.dataLayout)
-        LLVMSetTarget(llvmModule, runtime.target)
+        LLVMSetTarget(llvmModule, targetTriple)
     }
 
     private fun importRtFunction(name: String) = importFunction(name, runtime.llvmModule)
+    private fun importModelSpecificRtFunction(name: String) =
+            importRtFunction(name + context.memoryModel.suffix)
 
     private fun importRtGlobal(name: String) = importGlobal(name, runtime.llvmModule)
 
-    val allocInstanceFunction = importRtFunction("AllocInstance")
-    val allocArrayFunction = importRtFunction("AllocArrayInstance")
-    val initInstanceFunction = importRtFunction("InitInstance")
-    val initSharedInstanceFunction = importRtFunction("InitSharedInstance")
-    val updateReturnRefFunction = importRtFunction("UpdateReturnRef")
+    val allocInstanceFunction = importModelSpecificRtFunction("AllocInstance")
+    val allocArrayFunction = importModelSpecificRtFunction("AllocArrayInstance")
+    val initInstanceFunction = importModelSpecificRtFunction("InitInstance")
+    val initSharedInstanceFunction = importModelSpecificRtFunction("InitSharedInstance")
     val updateHeapRefFunction = importRtFunction("UpdateHeapRef")
     val updateStackRefFunction = importRtFunction("UpdateStackRef")
+    val updateReturnRefFunction = importRtFunction("UpdateReturnRef")
     val enterFrameFunction = importRtFunction("EnterFrame")
     val leaveFrameFunction = importRtFunction("LeaveFrame")
-    val getReturnSlotIfArenaFunction = importRtFunction("GetReturnSlotIfArena")
-    val getParamSlotIfArenaFunction = importRtFunction("GetParamSlotIfArena")
     val lookupOpenMethodFunction = importRtFunction("LookupOpenMethod")
     val isInstanceFunction = importRtFunction("IsInstance")
     val checkInstanceFunction = importRtFunction("CheckInstance")
@@ -460,6 +464,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val Kotlin_ObjCExport_AbstractMethodCalled by lazyRtFunction
     val Kotlin_ObjCExport_RethrowExceptionAsNSError by lazyRtFunction
     val Kotlin_ObjCExport_RethrowNSErrorAsException by lazyRtFunction
+    val Kotlin_ObjCExport_AllocInstanceWithAssociatedObject by lazyRtFunction
 
     val tlsMode by lazy {
         when (target) {

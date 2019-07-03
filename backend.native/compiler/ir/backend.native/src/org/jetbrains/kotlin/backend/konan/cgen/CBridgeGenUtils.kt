@@ -2,20 +2,20 @@ package org.jetbrains.kotlin.backend.konan.cgen
 
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.WrappedValueParameterDescriptor
+import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
 import org.jetbrains.kotlin.backend.common.lower.irBlock
 import org.jetbrains.kotlin.backend.common.lower.irThrow
-import org.jetbrains.kotlin.backend.konan.descriptors.createAnnotation
 import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
+import org.jetbrains.kotlin.backend.konan.ir.buildSimpleAnnotation
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
-import org.jetbrains.kotlin.descriptors.annotations.Annotations
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrValueParameterImpl
-import org.jetbrains.kotlin.ir.expressions.IrCall
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.IrMemberAccessExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrTryImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrValueParameterSymbolImpl
@@ -69,7 +69,7 @@ internal class KotlinBridgeBuilder(
         isExternal: Boolean
 ) {
     private var counter = 0
-    private val bridge: IrFunction = createKotlinBridge(startOffset, endOffset, cName, stubs.symbols, isExternal)
+    private val bridge: IrFunction = createKotlinBridge(startOffset, endOffset, cName, stubs, isExternal)
     val irBuilder: IrBuilderWithScope = irBuilder(stubs.irBuiltIns, bridge.symbol).at(startOffset, endOffset)
 
     fun addParameter(type: IrType): IrValueParameter {
@@ -99,19 +99,10 @@ private fun createKotlinBridge(
         startOffset: Int,
         endOffset: Int,
         cBridgeName: String,
-        symbols: KonanSymbols,
+        stubs: KotlinStubs,
         isExternal: Boolean
 ): IrFunctionImpl {
-    val bridgeAnnotations = Annotations.create(
-            listOf(
-                    if (isExternal) {
-                        createAnnotation(symbols.symbolName.descriptor, "value" to cBridgeName)
-                    } else {
-                        createAnnotation(symbols.exportForCppRuntime.descriptor, "name" to cBridgeName)
-                    }
-            )
-    )
-    val bridgeDescriptor = WrappedSimpleFunctionDescriptor(bridgeAnnotations)
+    val bridgeDescriptor = WrappedSimpleFunctionDescriptor()
     val bridge = IrFunctionImpl(
             startOffset,
             endOffset,
@@ -128,8 +119,13 @@ private fun createKotlinBridge(
     )
     bridgeDescriptor.bind(bridge)
     if (isExternal) {
-        bridge.annotations +=
-                irCall(startOffset, endOffset, symbols.filterExceptions.owner.constructors.single(), emptyList())
+        bridge.annotations += buildSimpleAnnotation(stubs.irBuiltIns, startOffset, endOffset,
+                stubs.symbols.symbolName.owner, cBridgeName)
+        bridge.annotations += buildSimpleAnnotation(stubs.irBuiltIns, startOffset, endOffset,
+                stubs.symbols.filterExceptions.owner)
+    } else {
+        bridge.annotations += buildSimpleAnnotation(stubs.irBuiltIns, startOffset, endOffset,
+                stubs.symbols.exportForCppRuntime.owner, cBridgeName)
     }
     return bridge
 }
@@ -185,7 +181,7 @@ internal class KotlinCallBuilder(private val irBuilder: IrBuilderWithScope, priv
 
     fun build(
             function: IrFunction,
-            transformCall: (IrCall) -> IrExpression = { it }
+            transformCall: (IrMemberAccessExpression) -> IrExpression = { it }
     ): IrExpression {
         val arguments = this.arguments.toMutableList()
 

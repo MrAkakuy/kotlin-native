@@ -61,7 +61,8 @@ public inline class Worker @PublishedApi internal constructor(val id: Int) {
      * Requests termination of the worker.
      *
      * @param processScheduledJobs controls is we shall wait until all scheduled jobs processed,
-     * or terminate immediately.
+     * or terminate immediately. If there are jobs to be execucted with [executeAfter] their execution
+     * is awaited for.
      */
     public fun requestTermination(processScheduledJobs: Boolean = true) =
             Future<Unit>(requestTerminationInternal(id, processScheduledJobs))
@@ -88,6 +89,32 @@ public inline class Worker @PublishedApi internal constructor(val id: Int) {
              */
             throw RuntimeException("Shall not be called directly")
 
+
+    /**
+     * Plan job for further execution in the worker. [operation] parameter must be either frozen, or execution to be
+     * planned on the current worker. Otherwise [IllegalStateException] will be thrown.
+     * [afterMicroseconds] defines after how many microseconds delay execution shall happen, 0 means immediately,
+     * on negative values [IllegalArgumentException] is thrown.
+     */
+    public fun executeAfter(afterMicroseconds: Long = 0, operation: () -> Unit): Unit {
+        val current = currentInternal()
+        if (current != id && !operation.isFrozen) throw IllegalStateException("Job for another worker must be frozen")
+        if (afterMicroseconds < 0) throw IllegalArgumentException("Timeout parameter must be non-negative")
+        executeAfterInternal(id, operation, afterMicroseconds)
+    }
+
+
+    /**
+     * Process pending job(s) on the queue of this worker, returns `true` if something was processed
+     * and `false` otherwise. Note that jobs scheduled with [executeAfter] using non-zero timeout are
+     * not processed this way. If termination request arrives while processing the queue via this API,
+     * worker is marked as terminated and will exit once the current request is done with.
+     */
+    public fun processQueue(): Boolean = processQueueInternal(id)
+
+    /**
+     * String representation of this worker.
+     */
     override public fun toString(): String = "worker $id"
 
     /**

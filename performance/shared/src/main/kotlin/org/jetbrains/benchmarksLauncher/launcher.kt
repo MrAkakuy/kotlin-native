@@ -19,11 +19,19 @@ package org.jetbrains.benchmarksLauncher
 import kotlin.math.sqrt
 import org.jetbrains.report.BenchmarkResult
 import org.jetbrains.kliopt.*
+import kotlin.reflect.KFunction0
 
 abstract class Launcher(val numWarmIterations: Int, val numberOfAttempts: Int, val prefix: String = "") {
     class Results(val mean: Double, val variance: Double)
 
     abstract val benchmarks: BenchmarksCollection
+
+    fun add(name: String, benchmark:() -> Any?) {
+        fun benchmarkWrapper() {
+            benchmark()
+        }
+        benchmarks[name] = ::benchmarkWrapper
+    }
 
     fun launch(filters: Collection<String>? = null,
                filterRegexes: Collection<String>? = null): List<BenchmarkResult> {
@@ -43,6 +51,7 @@ abstract class Launcher(val numWarmIterations: Int, val numberOfAttempts: Int, v
             var autoEvaluatedNumberOfMeasureIteration = 1
             while (true) {
                 var j = autoEvaluatedNumberOfMeasureIteration
+                cleanup()
                 val time = measureNanoTime {
                     while (j-- > 0) {
                         benchmark()
@@ -56,6 +65,7 @@ abstract class Launcher(val numWarmIterations: Int, val numberOfAttempts: Int, v
             val samples = DoubleArray(numberOfAttempts)
             for (k in samples.indices) {
                 i = autoEvaluatedNumberOfMeasureIteration
+                cleanup()
                 val time = measureNanoTime {
                     while (i-- > 0) {
                         benchmark()

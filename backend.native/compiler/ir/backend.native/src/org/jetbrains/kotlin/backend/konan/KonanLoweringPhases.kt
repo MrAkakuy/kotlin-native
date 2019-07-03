@@ -155,7 +155,8 @@ internal val sharedVariablesPhase = makeKonanFileLoweringPhase(
 internal val localFunctionsPhase = makeKonanFileOpPhase(
         op = { context, irFile ->
             LocalDelegatedPropertiesLowering().lower(irFile)
-            LocalDeclarationsLowering(context).runOnFilePostfix(irFile)
+            LocalDeclarationsLowering(context).lower(irFile)
+            LocalClassPopupLowering(context).lower(irFile)
         },
         name = "LocalFunctions",
         description = "Local function lowering",
@@ -260,7 +261,7 @@ internal val compileTimeEvaluatePhase = makeKonanFileLoweringPhase(
 )
 
 internal val coroutinesPhase = makeKonanFileLoweringPhase(
-        ::SuspendFunctionsLowering,
+        ::NativeSuspendFunctionsLowering,
         name = "Coroutines",
         description = "Coroutines lowering",
         prerequisite = setOf(localFunctionsPhase, finallyBlocksPhase)

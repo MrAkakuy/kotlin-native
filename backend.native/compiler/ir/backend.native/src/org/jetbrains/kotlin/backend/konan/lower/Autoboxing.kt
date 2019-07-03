@@ -32,8 +32,7 @@ import org.jetbrains.kotlin.ir.symbols.impl.IrFieldSymbolImpl
 import org.jetbrains.kotlin.ir.symbols.impl.IrSimpleFunctionSymbolImpl
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.util.*
-import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
-import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
+import org.jetbrains.kotlin.ir.visitors.*
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.utils.addIfNotNull
 
@@ -46,7 +45,7 @@ internal class Autoboxing(val context: Context) : FileLoweringPass {
 
     override fun lower(irFile: IrFile) {
         irFile.transformChildrenVoid(transformer)
-        irFile.transformChildrenVoid(InlineClassTransformer(context))
+        irFile.transform(InlineClassTransformer(context), data = null)
     }
 
 }
@@ -131,6 +130,7 @@ private class AutoboxingTransformer(val context: Context) : AbstractValueUsageTr
     private val IrFunctionAccessExpression.target: IrFunction get() = when (this) {
         is IrCall -> this.callTarget
         is IrDelegatingConstructorCall -> this.symbol.owner
+        is IrConstructorCall -> this.symbol.owner
         else -> TODO(this.render())
     }
 
@@ -212,12 +212,21 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
     private val symbols = context.ir.symbols
     private val irBuiltIns = context.irBuiltIns
 
+    private val builtBoxUnboxFunctions = mutableListOf<IrFunction>()
+
+    override fun visitFile(declaration: IrFile): IrFile {
+        declaration.transformChildrenVoid(this)
+        declaration.declarations.addAll(builtBoxUnboxFunctions)
+        builtBoxUnboxFunctions.clear()
+        return declaration
+    }
+
     override fun visitClass(declaration: IrClass): IrStatement {
         super.visitClass(declaration)
 
         if (declaration.isInlined()) {
             if (declaration.isUsedAsBoxClass()) {
-                if (KonanPrimitiveType.byFqName[declaration.fqNameSafe.toUnsafe()] != null) {
+                if (KonanPrimitiveType.byFqName[declaration.fqNameForIrSerialization.toUnsafe()] != null) {
                     buildBoxField(declaration)
                 }
 
@@ -266,12 +275,12 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
         }
     }
 
-    override fun visitCall(expression: IrCall): IrExpression {
-        super.visitCall(expression)
+    override fun visitConstructorCall(expression: IrConstructorCall): IrExpression {
+        super.visitConstructorCall(expression)
 
-        val function = expression.symbol.owner
-        return if (function is IrConstructor && function.constructedClass.isInlined()) {
-            builder.lowerConstructorCallToValue(expression, function)
+        val constructor = expression.symbol.owner
+        return if (constructor.constructedClass.isInlined()) {
+            builder.lowerConstructorCallToValue(expression, constructor)
         } else {
             expression
         }
@@ -340,7 +349,7 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
             +irReturn(irGet(box))
         }
 
-        irClass.declarations += function
+        builtBoxUnboxFunctions += function
     }
 
     private fun IrBuilderWithScope.irNullPointerOrReference(type: IrType): IrExpression =
@@ -366,7 +375,7 @@ private class InlineClassTransformer(private val context: Context) : IrBuildingT
             +irReturn(irGetField(irGet(boxParameter), getInlineClassBackingField(irClass)))
         }
 
-        irClass.declarations += function
+        builtBoxUnboxFunctions += function
     }
 
     private fun buildBoxField(declaration: IrClass) {
