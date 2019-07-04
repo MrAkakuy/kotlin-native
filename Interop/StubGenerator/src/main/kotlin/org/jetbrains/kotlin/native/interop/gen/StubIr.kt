@@ -299,7 +299,8 @@ class FunctionParameterStub(
 enum class MemberStubModality {
     OVERRIDE,
     OPEN,
-    FINAL
+    FINAL,
+    ABSTRACT
 }
 
 interface FunctionalStub : AnnotationHolder, StubIrElement, NativeBacked {

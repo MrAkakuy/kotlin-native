@@ -204,7 +204,7 @@ sealed class TypeInfo {
     }
 
     class LValueRef(val pointee: KotlinType, val cPointee: Type) : TypeInfo() {
-        override fun argToBridged(expr: String) = "$expr.ptr.rawValue"
+        override fun argToBridged(expr: String) = "$expr.rawPtr"
 
         override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
                 "interpretPointed<${pointee.render(scope)}>($expr)"

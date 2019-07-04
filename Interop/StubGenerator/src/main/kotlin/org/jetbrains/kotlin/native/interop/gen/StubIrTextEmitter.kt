@@ -158,6 +158,10 @@ class StubIrTextEmitter(
 
             out("// NOTE THIS FILE IS AUTO-GENERATED")
             out("")
+            out("#ifdef __cplusplus")
+            out("extern \"C\" {")
+            out("#endif")
+            out("")
 
             nativeBridges.nativeLines.forEach(out)
 
@@ -169,6 +173,12 @@ class StubIrTextEmitter(
                 out("  return Konan_main(argc, argv);")
                 out("}")
             }
+
+            out("")
+            out("#ifdef __cplusplus")
+            out("}")
+            out("#endif")
+            out("")
         }
 
         // Stubs generation may affect imports list so do it before header generation.
@@ -224,6 +234,7 @@ class StubIrTextEmitter(
             val typeParameters = renderTypeParameters(element.typeParameters)
             val header = "${modality}fun$typeParameters $receiver${element.name.asSimpleName()}$parameters: ${renderStubType(element.returnType)}"
             when {
+                element.modality == MemberStubModality.ABSTRACT -> out(header)
                 element.external -> out("external $header")
                 element.isOptionalObjCMethod() -> out("$header = optional()")
                 owner != null && owner.isInterface -> out(header)
@@ -395,6 +406,7 @@ class StubIrTextEmitter(
                     MemberStubModality.OVERRIDE -> "override "
                     MemberStubModality.OPEN -> "open "
                     MemberStubModality.FINAL -> "final "
+                    MemberStubModality.ABSTRACT -> "abstract "
                 }
 
     private fun renderVisibilityModifier(visibilityModifier: VisibilityModifier) = when (visibilityModifier) {

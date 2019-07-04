@@ -5,7 +5,9 @@
 package org.jetbrains.kotlin.native.interop.gen
 
 import org.jetbrains.kotlin.native.interop.gen.jvm.KotlinPlatform
+import org.jetbrains.kotlin.native.interop.indexer.LValueRefType
 import org.jetbrains.kotlin.native.interop.indexer.ObjCProtocol
+import org.jetbrains.kotlin.native.interop.indexer.PointerType
 import org.jetbrains.kotlin.utils.addToStdlib.firstIsInstanceOrNull
 
 class BridgeBuilderResult(
@@ -218,6 +220,11 @@ class StubIrBridgeBuilder(
         val bodyGenerator = KotlinCodeBuilder(scope = kotlinFile)
         val bridgeArguments = mutableListOf<TypedKotlinValue>()
         var isVararg = false
+        val owner = origin.function.owner
+
+        if (owner != null && !origin.function.isStatic) {
+            bridgeArguments.add(TypedKotlinValue(PointerType(owner), "ptr"))
+        }
         function.parameters.forEachIndexed { index, parameter ->
             isVararg = isVararg or parameter.isVararg
             val parameterName = parameter.name.asSimpleName()
@@ -251,10 +258,21 @@ class StubIrBridgeBuilder(
                 bridgeArguments,
                 independent = false
         ) { nativeValues ->
-            "${origin.function.name}(${nativeValues.joinToString()})"
+            when {
+                owner != null -> {
+                    if (origin.function.isStatic)
+                        "${owner.decl.spelling}::${origin.function.name}(${nativeValues.joinToString()})"
+                    else
+                        "(${nativeValues.first()})->${origin.function.name}(${nativeValues.drop(1).joinToString()})"
+                }
+                else -> "${origin.function.name}(${nativeValues.joinToString()})"
+            }
         }
         bodyGenerator.returnResult(result)
-        functionBridgeBodies[function] = bodyGenerator.build()
+        functionBridgeBodies[function] = when (function.modality) {
+            MemberStubModality.ABSTRACT -> listOf()
+            else -> bodyGenerator.build()
+        }
     }
 
     private fun generateProtocolGetter(protocolGetterName: String, protocol: ObjCProtocol) {

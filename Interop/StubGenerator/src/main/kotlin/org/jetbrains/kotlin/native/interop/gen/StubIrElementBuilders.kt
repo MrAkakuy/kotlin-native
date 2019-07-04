@@ -117,7 +117,14 @@ internal class StructStubBuilder(
             PropertyStub(field.name, WrapperStubType(kotlinType), kind)
         }
 
-        val superClass = SymbolicStubType("CStructVar")
+        val functions: List<FunctionStub> = def.functions.flatMap {
+            FunctionStubBuilder(context, it).build()
+        }.filterIsInstance<FunctionStub>()
+        val staticFunctions: List<FunctionStub> = def.staticFunctions.flatMap {
+            FunctionStubBuilder(context, it).build()
+        }.filterIsInstance<FunctionStub>()
+
+        val superClass = SymbolicStubType(if (decl.bases.isEmpty()) "CStructVar" else decl.bases.first().spelling)
         val rawPtrConstructorParam = ConstructorParameterStub("rawPtr", SymbolicStubType("NativePtr"))
         val superClassInit = SuperClassInit(superClass, listOf(GetConstructorParameter(rawPtrConstructorParam)))
 
@@ -125,14 +132,27 @@ internal class StructStubBuilder(
         val companionSuper = SymbolicStubType("Type")
         val typeSize = listOf(IntegralConstantStub(def.size, 4, true), IntegralConstantStub(def.align.toLong(), 4, true))
         val companionSuperInit = SuperClassInit(companionSuper, typeSize)
-        val companion = ClassStub.Companion(companionSuperInit)
+        val companion = ClassStub.Companion(
+                companionSuperInit,
+                functions = staticFunctions
+        )
+
+        val modality = when (context.configuration.library.language) {
+            Language.CPP -> {
+                if (decl.isAbstract)
+                    ClassStubModality.ABSTRACT
+                else
+                    ClassStubModality.OPEN
+            }
+            else -> ClassStubModality.NONE
+        }
 
         return listOf(ClassStub.Simple(
                 classifier,
                 origin = StubOrigin.Struct(decl),
                 properties = fields.filterNotNull() + if (platform == KotlinPlatform.NATIVE) bitFields else emptyList(),
-                functions = emptyList(),
-                modality = ClassStubModality.NONE,
+                functions = functions,
+                modality = modality,
                 annotations = listOfNotNull(structAnnotation),
                 superClassInit = superClassInit,
                 constructorParameters = listOf(rawPtrConstructorParam),
@@ -358,6 +378,18 @@ internal class FunctionStubBuilder(
             annotations = listOf(AnnotationStub.CCall.Symbol(context.generateNextUniqueId("knifunptr_")))
             mustBeExternal = true
         }
+
+        val modality = when {
+            func.isPureVirtual -> MemberStubModality.ABSTRACT
+            func.isVirtual -> {
+                val proto = func.owner?.decl?.bases?.getOrNull(0)?.def?.functions?.find {
+                    it.name == func.name && it.parameters == func.parameters && it.returnType == func.returnType && it.isVirtual
+                }
+                if (proto != null) MemberStubModality.OVERRIDE else MemberStubModality.OPEN
+            }
+            else -> MemberStubModality.FINAL
+        }
+
         val functionStub = FunctionStub(
                 func.name,
                 returnType,
@@ -366,7 +398,7 @@ internal class FunctionStubBuilder(
                 annotations,
                 mustBeExternal,
                 null,
-                MemberStubModality.FINAL
+                modality
         )
         return listOf(functionStub)
     }
@@ -438,14 +470,22 @@ internal class GlobalStubBuilder(
 
         val kotlinType: KotlinType
         val kind: PropertyStub.Kind
-        if (unwrappedType is ArrayType) {
-            kotlinType = (mirror as TypeMirror.ByValue).valueType
-            val getter = PropertyAccessor.Getter.SimpleGetter()
-            val extra = BridgeGenerationComponents.GlobalGetterBridgeInfo(global.name, mirror.info, isArray = true)
-            context.bridgeComponentsBuilder.getterToBridgeInfo[getter] = extra
-            kind = PropertyStub.Kind.Val(getter)
-        } else {
-            when (mirror) {
+        when (unwrappedType) {
+            is ArrayType -> {
+                kotlinType = (mirror as TypeMirror.ByValue).valueType
+                val getter = PropertyAccessor.Getter.SimpleGetter()
+                val extra = BridgeGenerationComponents.GlobalGetterBridgeInfo(global.name, mirror.info, isArray = true)
+                context.bridgeComponentsBuilder.getterToBridgeInfo[getter] = extra
+                kind = PropertyStub.Kind.Val(getter)
+            }
+            is LValueRefType -> {
+                kotlinType = mirror.pointedType
+                val getter = PropertyAccessor.Getter.SimpleGetter()
+                val extra = BridgeGenerationComponents.GlobalGetterBridgeInfo(global.name, mirror.info, isArray = false)
+                context.bridgeComponentsBuilder.getterToBridgeInfo[getter] = extra
+                kind = PropertyStub.Kind.Val(getter)
+            }
+            else -> when (mirror) {
                 is TypeMirror.ByValue -> {
                     kotlinType = mirror.argType
                     val getter = PropertyAccessor.Getter.SimpleGetter()

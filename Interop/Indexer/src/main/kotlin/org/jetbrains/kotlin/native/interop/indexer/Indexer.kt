@@ -42,8 +42,8 @@ private class StructDefImpl(
     override val members = mutableListOf<StructMember>()
 
     val uniqueMethods = mutableSetOf<FunctionDecl>()
-    override val methods get() = uniqueMethods.filter { !it.isStatic }.toList()
-    override val staticMethods get() = uniqueMethods.filter { it.isStatic }.toList()
+    override val functions get() = uniqueMethods.filter { !it.isStatic }.toList()
+    override val staticFunctions get() = uniqueMethods.filter { it.isStatic }.toList()
 }
 
 private class EnumDefImpl(spelling: String, type: Type, override val location: Location) : EnumDef(spelling, type) {

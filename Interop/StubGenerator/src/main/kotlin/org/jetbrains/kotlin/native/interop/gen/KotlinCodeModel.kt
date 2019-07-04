@@ -184,7 +184,6 @@ object KotlinTypes {
     val cOpaque by InteropType
     val cOpaquePointer by InteropType
     val cOpaquePointerVar by InteropType
-    val lvalueRef by InteropType
 
     val booleanVarOf by InteropClassifier
 
