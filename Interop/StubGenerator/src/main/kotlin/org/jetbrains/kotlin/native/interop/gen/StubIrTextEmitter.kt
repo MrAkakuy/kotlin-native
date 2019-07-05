@@ -225,6 +225,8 @@ class StubIrTextEmitter(
         }
 
         override fun visitFunction(element: FunctionStub, owner: StubContainer?) {
+            if (element in bridgeBuilderResult.excludedStubs) return
+
             val modality = renderMemberModality(element.modality, owner)
             element.annotations.forEach {
                 out(renderAnnotation(it))
@@ -253,6 +255,8 @@ class StubIrTextEmitter(
         }
 
         override fun visitProperty(element: PropertyStub, owner: StubContainer?) {
+            if (element in bridgeBuilderResult.excludedStubs) return
+
             val modality = renderMemberModality(element.modality, owner)
             val receiver = if (element.receiverType != null) "${renderStubType(element.receiverType)}." else ""
             val name = if (owner?.isTopLevelContainer == true) {
