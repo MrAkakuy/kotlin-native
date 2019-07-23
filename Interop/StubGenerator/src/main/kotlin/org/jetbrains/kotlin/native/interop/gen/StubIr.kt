@@ -4,6 +4,7 @@
  */
 package org.jetbrains.kotlin.native.interop.gen
 
+import com.sun.org.apache.xpath.internal.operations.Bool
 import org.jetbrains.kotlin.native.interop.indexer.*
 
 interface StubIrElement {
@@ -99,6 +100,10 @@ class SymbolicStubType(
         override val nullable: Boolean = false
 ) : StubType()
 
+class ContextAllocationStubType : StubType() {
+    override val nullable: Boolean = false
+}
+
 /**
  * Represents a source of StubIr element.
  */
@@ -122,6 +127,8 @@ sealed class StubOrigin {
     ) : StubOrigin()
 
     class Enum(val enum: EnumDef) : StubOrigin()
+
+    class Constructor(val constructor: CxxClassConstructorDecl) : StubOrigin()
 
     class Function(val function: FunctionDecl) : StubOrigin()
 
@@ -161,6 +168,8 @@ sealed class AnnotationStub {
     class CLength(val length: Long) : AnnotationStub()
 
     class Deprecated(val message: String, val replaceWith: String) : AnnotationStub()
+
+    class PublishedApi : AnnotationStub()
 }
 
 /**
@@ -220,8 +229,10 @@ class GetConstructorParameter(
 
 class SuperClassInit(
         val type: StubType,
-        val arguments: List<ValueStub> = listOf()
+        val arguments: List<ValueStub>? = null
 )
+
+class ContextAllocationStub : ValueStub()
 
 sealed class ClassStub : StubContainer(), StubElementWithOrigin, AnnotationHolder {
 
@@ -349,6 +360,11 @@ sealed class PropertyAccessor : FunctionalStub {
             override val annotations: List<AnnotationStub> = emptyList()
             val typeParameters: List<StubType> = listOf(pointedType)
         }
+
+        class InterpretCxxClassPointed(val cGlobalName:String, pointedType: WrapperStubType) : Getter() {
+            override val annotations: List<AnnotationStub> = emptyList()
+            val typeParameter: StubType = pointedType
+        }
     }
 
     sealed class Setter : PropertyAccessor() {
@@ -390,19 +406,28 @@ class FunctionStub(
         val external: Boolean = false,
         val receiver: ReceiverParameterStub?,
         val modality: MemberStubModality,
-        val typeParameters: List<TypeParameterStub> = emptyList()
+        val typeParameters: List<TypeParameterStub> = emptyList(),
+        val kotlinFunctionAlias: String? = null
 ) : StubElementWithOrigin, FunctionalStub {
 
     override fun <T, R> accept(visitor: StubIrVisitor<T, R>, data: T) =
         visitor.visitFunction(this, data)
 }
 
-// TODO: should we support non-trivial constructors?
 class ConstructorStub(
         override val parameters: List<FunctionParameterStub>,
         override val annotations: List<AnnotationStub>,
+        override val origin: StubOrigin = StubOrigin.None,
+        val isDefault: Boolean = true,
+        val chainCall: List<ValueStub>? = null,
+        val chainCallType: ChainCallType = ChainCallType.SUPER,
         val visibility: VisibilityModifier = VisibilityModifier.PUBLIC
-) : FunctionalStub {
+) : StubElementWithOrigin, FunctionalStub {
+
+    enum class ChainCallType {
+        SUPER,
+        THIS
+    }
 
     override fun <T, R> accept(visitor: StubIrVisitor<T, R>, data: T) =
         visitor.visitConstructor(this, data)

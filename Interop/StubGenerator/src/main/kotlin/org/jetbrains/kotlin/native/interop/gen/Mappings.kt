@@ -217,7 +217,39 @@ sealed class TypeInfo {
 
         override fun cToBridged(expr: NativeExpression) = "&($expr)"
 
-        override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = throw NotImplementedError()
+        override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = throw NotImplementedError("LValue Var")
+    }
+
+    class CxxClassPointer(val pointee: KotlinType, val cPointee: Type) : TypeInfo() {
+        override fun argToBridged(expr: String) = "$expr.rawValue"
+
+        override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
+                error("Pointers to C++ class not implemented yet")
+
+        override val bridgedType: BridgedType
+            get() = BridgedType.NATIVE_PTR
+
+        override fun cFromBridged(expr: NativeExpression, scope: NativeScope, nativeBacked: NativeBacked) =
+                "(${getPointerTypeStringRepresentation(cPointee)})$expr"
+
+        override fun constructPointedType(valueType: KotlinType) = KotlinTypes.cOpaquePointerVar
+    }
+
+    class CxxClassLValueRef(val pointee: KotlinType, val cPointee: Type) : TypeInfo() {
+        override fun argToBridged(expr: String) = "$expr.rawPtr"
+
+        override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
+                "${pointee.render(scope)}(interpretPointed<CStructVar>($expr))"
+
+        override val bridgedType: BridgedType
+            get() = BridgedType.NATIVE_PTR
+
+        override fun cFromBridged(expr: NativeExpression, scope: NativeScope, nativeBacked: NativeBacked) =
+                "*(${getPointerTypeStringRepresentation(cPointee)})$expr"
+
+        override fun cToBridged(expr: NativeExpression) = "&($expr)"
+
+        override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = throw NotImplementedError("LValue Var")
     }
 
     class ObjCPointerInfo(val kotlinType: KotlinType, val type: ObjCPointer) : TypeInfo() {
@@ -413,6 +445,7 @@ fun mirror(declarationMapper: DeclarationMapper, type: Type): TypeMirror = when 
     is PrimitiveType -> mirrorPrimitiveType(type, declarationMapper)
 
     is RecordType -> byRefTypeMirror(declarationMapper.getKotlinClassForPointed(type.decl).type)
+    is CxxClassType -> byRefTypeMirror(declarationMapper.getKotlinClassForPointed(type.decl).type)
 
     is EnumType -> {
         val pkg = declarationMapper.getPackageFor(type.def)
@@ -460,6 +493,29 @@ fun mirror(declarationMapper: DeclarationMapper, type: Type): TypeMirror = when 
         val pointeeType = type.pointeeType
         val pointeeMirror = mirror(declarationMapper, pointeeType)
         val info = TypeInfo.LValueRef(pointeeMirror.pointedType, pointeeType)
+        TypeMirror.ByValue(
+                pointeeMirror.pointedType,
+                info,
+                pointeeMirror.pointedType,
+                false
+        )
+    }
+
+    is CxxClassPointerType -> {
+        val pointeeType = type.pointeeType
+        val pointeeMirror = mirror(declarationMapper, pointeeType)
+        val info = TypeInfo.CxxClassPointer(pointeeMirror.pointedType, pointeeType)
+        TypeMirror.ByValue(
+                KotlinTypes.cOpaquePointerVar,
+                info,
+                KotlinTypes.cOpaquePointer
+        )
+    }
+
+    is CxxClassLValueRefType -> {
+        val pointeeType = type.pointeeType
+        val pointeeMirror = mirror(declarationMapper, pointeeType)
+        val info = TypeInfo.CxxClassLValueRef(pointeeMirror.pointedType, pointeeType)
         TypeMirror.ByValue(
                 pointeeMirror.pointedType,
                 info,

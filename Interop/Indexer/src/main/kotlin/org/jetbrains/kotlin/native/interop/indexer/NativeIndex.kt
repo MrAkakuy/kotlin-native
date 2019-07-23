@@ -97,6 +97,7 @@ fun buildNativeIndex(library: NativeLibrary, verbose: Boolean): IndexerResult = 
 abstract class NativeIndex {
     abstract val structs: Collection<StructDecl>
     abstract val enums: Collection<EnumDef>
+    abstract val cxxClasses: Collection<CxxClassDecl>
     abstract val objCClasses: Collection<ObjCClass>
     abstract val objCProtocols: Collection<ObjCProtocol>
     abstract val objCCategories: Collection<ObjCCategory>
@@ -141,29 +142,26 @@ class IncompleteField(name: String, type: Type) : StructMember(name, type) {
 }
 
 /**
- * C/C++ struct/class declaration.
+ * C struct declaration.
  */
-abstract class StructDecl(val spelling: String, val isAbstract: Boolean = false) : TypeDeclaration {
+abstract class StructDecl(val spelling: String) : TypeDeclaration {
 
-    abstract val bases: List<StructDecl>
     abstract val def: StructDef?
 }
 
 /**
- * C/C++ struct/class definition.
+ * C struct definition.
  *
  * @param hasNaturalLayout must be `false` if the struct has unnatural layout, e.g. it is `packed`.
  * May be `false` even if the struct has natural layout.
  */
-abstract class StructDef(val size: Long, val align: Int, val decl: StructDecl) {
+abstract class StructDef(val size: Long, val align: Int, open val decl: StructDecl) {
 
     enum class Kind {
         STRUCT, UNION, CLASS
     }
 
     abstract val members: List<StructMember>
-    abstract val functions: List<FunctionDecl>
-    abstract val staticFunctions: List<FunctionDecl>
     abstract val kind: Kind
 
     val fields: List<Field> get() = members.filterIsInstance<Field>()
@@ -181,6 +179,23 @@ class EnumConstant(val name: String, val value: Long, val isExplicitlyDefined: B
 abstract class EnumDef(val spelling: String, val baseType: Type) : TypeDeclaration {
 
     abstract val constants: List<EnumConstant>
+}
+
+/**
+ * C++ class declaration.
+ */
+abstract class CxxClassDecl(spelling: String, val isAbstract: Boolean = false) : StructDecl(spelling) {
+    abstract val bases: List<CxxClassDecl>
+    abstract override val def: CxxClassDef?
+}
+
+/**
+ * C++ class definition.
+ */
+abstract class CxxClassDef(size: Long, align: Int, override val decl: CxxClassDecl) : StructDef(size, align, decl) {
+    abstract val constructors: List<CxxClassConstructorDecl>
+    abstract val functions: List<CxxClassFunctionDecl>
+    abstract val staticFunctions: List<CxxClassFunctionDecl>
 }
 
 sealed class ObjCContainer {
@@ -229,12 +244,25 @@ abstract class ObjCCategory(val name: String, val clazz: ObjCClass) : ObjCContai
 data class Parameter(val name: String?, val type: Type, val nsConsumed: Boolean)
 
 /**
- * C/C++ function declaration.
+ * C function declaration.
  */
-class FunctionDecl(val name: String, val parameters: List<Parameter>, val returnType: Type, val binaryName: String,
-                   val isDefined: Boolean, val isVararg: Boolean,
-                   val owner: RecordType? = null, val isStatic: Boolean = false,
-                   val isVirtual: Boolean = false, val isPureVirtual: Boolean = false)
+open class FunctionDecl(val name: String, val parameters: List<Parameter>, val returnType: Type, val binaryName: String,
+                        val isDefined: Boolean, val isVararg: Boolean)
+
+/**
+ * C++ class function declaration.
+ */
+class CxxClassFunctionDecl(
+        name: String, parameters: List<Parameter>, returnType: Type, binaryName: String, isDefined: Boolean,
+        isVararg: Boolean, val owner: CxxClassDecl, val isStatic: Boolean = false,
+        val isVirtual: Boolean = false, val isPureVirtual: Boolean = false
+) : FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg)
+
+/**
+ * C++ class constructor declaration.
+ */
+class CxxClassConstructorDecl(val parameters: List<Parameter>, val binaryName: String, val isDefined: Boolean,
+                              val isVararg: Boolean, val owner: CxxClassDecl)
 
 /**
  * C typedef definition.
@@ -285,6 +313,12 @@ data class EnumType(val def: EnumDef) : Type
 data class PointerType(val pointeeType: Type, val pointeeIsConst: Boolean = false) : Type
 
 data class LValueRefType(val pointeeType: Type, val pointeeIsConst: Boolean = false) : Type
+
+data class CxxClassType(val decl: CxxClassDecl) : Type
+
+data class CxxClassPointerType(val pointeeType: CxxClassType, val pointeeIsConst: Boolean = false) : Type
+
+data class CxxClassLValueRefType(val pointeeType: CxxClassType, val pointeeIsConst: Boolean = false) : Type
 // TODO: refactor type representation and support type modifiers more generally.
 
 data class FunctionType(val parameterTypes: List<Type>, val returnType: Type) : Type

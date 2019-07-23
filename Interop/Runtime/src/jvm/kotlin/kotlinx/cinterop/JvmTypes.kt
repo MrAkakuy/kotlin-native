@@ -49,6 +49,17 @@ inline fun <reified T : NativePointed> interpretNullablePointed(ptr: NativePtr):
         return result
     }
 }
+/*
+@Suppress("NON_PUBLIC_CALL_FROM_PUBLIC_INLINE")
+inline fun <reified T : CxxClass> interpretCxxNullablePointed(ptr: NativePtr): T? {
+    if (ptr == nativeNullPtr) {
+        return null
+    } else {
+        val result = nativeMemUtils.allocateInstance<T>()
+        result.rawPtr = ptr
+        return result
+    }
+}*/
 
 /**
  * Creates a [CPointer] from the raw pointer of [NativePtr].

@@ -5,16 +5,14 @@
 package org.jetbrains.kotlin.native.interop.gen
 
 import org.jetbrains.kotlin.native.interop.gen.jvm.KotlinPlatform
-import org.jetbrains.kotlin.native.interop.indexer.LValueRefType
-import org.jetbrains.kotlin.native.interop.indexer.ObjCProtocol
-import org.jetbrains.kotlin.native.interop.indexer.PointerType
+import org.jetbrains.kotlin.native.interop.indexer.*
 import org.jetbrains.kotlin.utils.addToStdlib.firstIsInstanceOrNull
 
 class BridgeBuilderResult(
         val kotlinFile: KotlinFile,
         val nativeBridges: NativeBridges,
         val propertyAccessorBridgeBodies: Map<PropertyAccessor, String>,
-        val functionBridgeBodies: Map<FunctionStub, List<String>>,
+        val functionalBridgeBodies: Map<FunctionalStub, List<String>>,
         val excludedStubs: Set<StubIrElement>
 )
 
@@ -66,7 +64,7 @@ class StubIrBridgeBuilder(
             MappingBridgeGeneratorImpl(declarationMapper, simpleBridgeGenerator)
 
     private val propertyAccessorBridgeBodies = mutableMapOf<PropertyAccessor, String>()
-    private val functionBridgeBodies = mutableMapOf<FunctionStub, List<String>>()
+    private val functionalBridgeBodies = mutableMapOf<FunctionalStub, List<String>>()
     private val excludedStubs = mutableSetOf<StubIrElement>()
 
     private val bridgeGeneratingVisitor = object : StubIrVisitor<StubContainer?, Unit> {
@@ -92,6 +90,8 @@ class StubIrBridgeBuilder(
                     element.external -> tryProcessCCallAnnotation(element)
                     element.isOptionalObjCMethod() -> { }
                     owner != null && owner.isInterface -> { }
+                    element.modality == MemberStubModality.ABSTRACT -> { }
+                    element.kotlinFunctionAlias != null -> { }
                     else -> generateBridgeBody(element)
                 }
             } catch (e: Throwable) {
@@ -133,7 +133,18 @@ class StubIrBridgeBuilder(
             }
         }
 
-        override fun visitConstructor(constructorStub: ConstructorStub, owner: StubContainer?) {
+        override fun visitConstructor(element: ConstructorStub, owner: StubContainer?) {
+            try {
+                when {
+                    //element.external -> tryProcessCCallAnnotation(element)
+                    element.isDefault -> { }
+                    owner != null && owner.isInterface -> { }
+                    else -> generateBridgeBody(element)
+                }
+            } catch (e: Throwable) {
+                context.log("Warning: cannot generate bridge for constructor.")
+                excludedStubs += element
+            }
         }
 
         override fun visitPropertyAccessor(accessor: PropertyAccessor, owner: StubContainer?) {
@@ -199,6 +210,11 @@ class StubIrBridgeBuilder(
                     val getAddressExpression = getGlobalAddressExpression(accessor.cGlobalName, accessor)
                     propertyAccessorBridgeBodies[accessor] = getAddressExpression
                 }
+
+                is PropertyAccessor.Getter.InterpretCxxClassPointed -> {
+                    val getAddressExpression = getGlobalAddressExpression(accessor.cGlobalName, accessor)
+                    propertyAccessorBridgeBodies[accessor] = getAddressExpression
+                }
             }
         }
 
@@ -233,11 +249,11 @@ class StubIrBridgeBuilder(
         val bodyGenerator = KotlinCodeBuilder(scope = kotlinFile)
         val bridgeArguments = mutableListOf<TypedKotlinValue>()
         var isVararg = false
-        val owner = origin.function.owner
+        val owner = (origin.function as? CxxClassFunctionDecl)?.owner
 
-        if (owner != null && !origin.function.isStatic) {
-            bridgeArguments.add(TypedKotlinValue(PointerType(owner), "ptr"))
-        }
+        if (owner != null && !origin.function.isStatic)
+            bridgeArguments.add(TypedKotlinValue(CxxClassPointerType(CxxClassType(owner)), "ptr"))
+
         function.parameters.forEachIndexed { index, parameter ->
             isVararg = isVararg or parameter.isVararg
             val parameterName = parameter.name.asSimpleName()
@@ -274,7 +290,7 @@ class StubIrBridgeBuilder(
             when {
                 owner != null -> {
                     if (origin.function.isStatic)
-                        "${owner.decl.spelling}::${origin.function.name}(${nativeValues.joinToString()})"
+                        "${owner.spelling}::${origin.function.name}(${nativeValues.joinToString()})"
                     else
                         "(${nativeValues.first()})->${origin.function.name}(${nativeValues.drop(1).joinToString()})"
                 }
@@ -282,10 +298,60 @@ class StubIrBridgeBuilder(
             }
         }
         bodyGenerator.returnResult(result)
-        functionBridgeBodies[function] = when (function.modality) {
-            MemberStubModality.ABSTRACT -> listOf()
-            else -> bodyGenerator.build()
+        functionalBridgeBodies[function] = bodyGenerator.build()
+    }
+
+    private fun generateBridgeBody(constructor: ConstructorStub) {
+        assert(constructor.origin is StubOrigin.Constructor) { "Can't create bridge for constructor" }
+        val origin = constructor.origin as StubOrigin.Constructor
+        val bodyGenerator = KotlinCodeBuilder(scope = kotlinFile)
+        val bridgeArguments = mutableListOf<TypedKotlinValue>()
+        var isVararg = false
+        val owner = origin.constructor.owner
+        var offset = 0
+
+        bridgeArguments.add(TypedKotlinValue(PointerType(VoidType), "ptr"))
+
+        constructor.parameters.forEachIndexed { index, parameter ->
+            isVararg = isVararg or parameter.isVararg
+            val parameterName = parameter.name.asSimpleName()
+            val bridgeArgument = when {
+                parameter in builderResult.bridgeGenerationComponents.cStringParameters -> {
+                    bodyGenerator.pushMemScoped()
+                    "$parameterName?.cstr?.getPointer(memScope)"
+                }
+                parameter in builderResult.bridgeGenerationComponents.wCStringParameters -> {
+                    bodyGenerator.pushMemScoped()
+                    "$parameterName?.wcstr?.getPointer(memScope)"
+                }
+                isCValuesRef(parameter.type) -> {
+                    bodyGenerator.pushMemScoped()
+                    bodyGenerator.getNativePointer(parameterName)
+                }
+                else -> {
+                    parameterName
+                }
+            }
+            if (parameter.type !is ContextAllocationStubType) // TODO: think again
+                bridgeArguments += TypedKotlinValue(origin.constructor.parameters[index - offset].type, bridgeArgument)
+            else
+                offset = 1
         }
+        // TODO: Improve assertion message.
+        assert(!isVararg || context.platform != KotlinPlatform.NATIVE) {
+            "Constructor was processed incorrectly."
+        }
+        val result = mappingBridgeGenerator.kotlinToNative(
+                bodyGenerator,
+                constructor,
+                VoidType,
+                bridgeArguments,
+                independent = false
+        ) { nativeValues ->
+            "new (${nativeValues.first()}) ${owner.spelling}(${nativeValues.drop(1).joinToString()})"
+        }
+        bodyGenerator.returnResult(result)
+        functionalBridgeBodies[constructor] = bodyGenerator.build()
     }
 
     private fun generateProtocolGetter(protocolGetterName: String, protocol: ObjCProtocol) {
@@ -305,7 +371,7 @@ class StubIrBridgeBuilder(
                 kotlinFile,
                 simpleBridgeGenerator.prepare(),
                 propertyAccessorBridgeBodies.toMap(),
-                functionBridgeBodies.toMap(),
+                functionalBridgeBodies.toMap(),
                 excludedStubs.toSet()
         )
     }

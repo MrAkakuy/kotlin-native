@@ -29,6 +29,10 @@ public interface NativeFreeablePlacement : NativePlacement {
 
 public fun NativeFreeablePlacement.free(pointer: CPointer<*>) = this.free(pointer.rawValue)
 public fun NativeFreeablePlacement.free(pointed: NativePointed) = this.free(pointed.rawPtr)
+public infix fun NativeFreeablePlacement.delete(obj: CxxClass) {
+    obj.destructor()
+    free(obj.body)
+}
 
 public object nativeHeap : NativeFreeablePlacement {
     override fun alloc(size: Long, align: Int) = nativeMemUtils.alloc(size, align)
@@ -290,6 +294,20 @@ public fun <T : CVariable> CPointed.readValue(size: Long, align: Int): CValue<T>
 // Note: can't be declared as property due to possible clash with a struct field.
 // TODO: find better name.
 public inline fun <reified T : CStructVar> T.readValue(): CValue<T> = this.readValue(typeOf<T>())
+/*
+public fun <T : CVariable> CxxClass.readValues(size: Int, align: Int): CValues<T> = body.readValues(size, align)
+
+public inline fun <reified T : CVariable> CxxClass.readValues(count: Int): CValues<T> =
+        this.readValues<T>(size = count * sizeOf<T>().toInt(), align = alignOf<T>())
+
+public fun <T : CVariable> CxxClass.readValue(size: Long, align: Int): CValue<T> = body.readValue(size, align)
+
+@PublishedApi internal fun <T : CVariable> CxxClass.readValue(type: CVariable.Type): CValue<T> =
+        readValue(type.size, type.align)
+
+// Note: can't be declared as property due to possible clash with a struct field.
+// TODO: find better name.
+public inline fun <reified T : CStructVar> CxxClass.readValue(): CValue<T> = this.readValue(typeOf<T>())*/
 
 public fun <T: CVariable> CValue<T>.write(location: NativePtr) {
     this.place(interpretCPointer(location)!!)

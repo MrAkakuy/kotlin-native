@@ -45,6 +45,8 @@ private class OpaqueNativePointed(rawPtr: NativePtr) : NativePointed(rawPtr.toNo
 public fun interpretOpaquePointed(ptr: NativePtr): NativePointed = interpretPointed<OpaqueNativePointed>(ptr)
 public fun interpretNullableOpaquePointed(ptr: NativePtr): NativePointed? = interpretNullablePointed<OpaqueNativePointed>(ptr)
 
+//public inline fun <reified T : CxxClass> interpretCxxPointed(ptr: NativePtr): T = interpretCxxNullablePointed<T>(ptr)!!
+
 /**
  * Changes the interpretation of the pointed data or code.
  */
@@ -168,6 +170,9 @@ public class CPointer<T : CPointed> internal constructor(@PublishedApi internal 
 public val <T : CPointed> T.ptr: CPointer<T>
     get() = interpretCPointer(this.rawPtr)!!
 
+public val <T : CxxClass> T.ptr: CPointer<CStructVar>
+    get() = interpretCPointer(this.rawPtr)!!
+
 /**
  * Returns the corresponding [CPointed].
  *
@@ -175,6 +180,9 @@ public val <T : CPointed> T.ptr: CPointer<T>
  */
 public inline val <reified T : CPointed> CPointer<T>.pointed: T
     get() = interpretPointed<T>(this.rawValue)
+
+/*public inline fun <reified T : CxxClass> CPointer<*>.cxxPointed(): T
+    = interpretCxxPointed<T>(this.rawValue)*/
 
 // `null` value of `CPointer?` is mapped to `nativeNullPtr`
 public val CPointer<*>?.rawValue: NativePtr
@@ -239,6 +247,10 @@ public inline fun <reified T : CVariable> CStructVar.arrayMemberAt(offset: Long)
     return interpretCPointer<T>(this.rawPtr + offset)!!
 }
 
+public inline fun <reified T : CPointed> CxxClass.memberAt(offset: Long) = body.memberAt<T>(offset)
+
+public inline fun <reified T : CVariable> CxxClass.arrayMemberAt(offset: Long) = body.arrayMemberAt<T>(offset)
+
 /**
  * The C struct-typed variable located in memory.
  */
@@ -259,6 +271,35 @@ public interface CEnum {
 }
 
 public abstract class CEnumVar(rawPtr: NativePtr) : CPrimitiveVar(rawPtr)
+
+/**
+ * The C++ class/struct.
+ */
+public abstract class CxxClass(public var body: CStructVar, context: NativePlacement?) {
+    init {
+        (context as? AutofreeScope)?.defer { destructor() }
+    }
+
+    open class Type(size: Long, align: Int) : CStructVar.Type(size, align)
+
+    var rawPtr: NativePtr
+        get() = body.rawPtr
+        set(value) { body.rawPtr = value }
+
+    public abstract fun destructor()
+
+    public override fun hashCode(): Int = body.hashCode()
+    public override fun equals(other: Any?): Boolean {
+        if (this === other) {
+            return true // fast path
+        }
+        return other is CxxClass && body == other.body || body == other
+    }
+    public override fun toString(): String = body.toString()
+}
+
+public val CxxClass?.rawPtr: NativePtr
+    get() = if (this != null) this.rawPtr else nativeNullPtr
 
 // generics below are used for typedef support
 // these classes are not supposed to be used directly, instead the typealiases are provided.

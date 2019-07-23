@@ -267,6 +267,7 @@ class StubIrBuilder(private val context: StubIrContext) {
         nativeIndex.objCCategories.filter { !it.clazz.isNSStringSubclass() }.forEach { generateStubsForObjCCategory(it) }
         nativeIndex.structs.forEach { generateStubsForStruct(it) }
         nativeIndex.enums.forEach { generateStubsForEnum(it) }
+        nativeIndex.cxxClasses.forEach { generateStubsForCxxClass(it) }
         nativeIndex.functions.filter { it.name !in excludedFunctions }.forEach { generateStubsForFunction(it) }
         nativeIndex.typedefs.forEach { generateStubsForTypedef(it) }
         nativeIndex.globals.filter { it.name !in excludedFunctions }.forEach { generateStubsForGlobal(it) }
@@ -324,6 +325,14 @@ class StubIrBuilder(private val context: StubIrContext) {
     private fun generateStubsForStruct(decl: StructDecl) {
         try {
             addStubs(StructStubBuilder(buildingContext, decl).build())
+        } catch (e: Throwable) {
+            context.log("Warning: cannot generate definition for struct ${decl.spelling}")
+        }
+    }
+
+    private fun generateStubsForCxxClass(decl: CxxClassDecl) {
+        try {
+            addStubs(CxxClassStubBuilder(buildingContext, decl).build())
         } catch (e: Throwable) {
             context.log("Warning: cannot generate definition for struct ${decl.spelling}")
         }

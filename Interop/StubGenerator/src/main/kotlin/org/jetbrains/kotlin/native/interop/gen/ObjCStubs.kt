@@ -210,7 +210,7 @@ private class ObjCMethodStubBuilder(
             }
         } else {
             null
-        }
+        } as FunctionalStub?
         return listOfNotNull(
                 FunctionStub(
                         name,
@@ -494,7 +494,7 @@ internal abstract class ObjCContainerStubBuilder(
         val defaultConstructor =  if (container is ObjCClass && methodToStub.values.none { it.isDefaultConstructor() }) {
             // Always generate default constructor.
             // If it is not produced for an init method, then include it manually:
-            ConstructorStub(listOf(), listOf(), VisibilityModifier.PROTECTED)
+            ConstructorStub(listOf(), listOf(), visibility = VisibilityModifier.PROTECTED)
         } else null
 
         return Pair(
@@ -552,7 +552,7 @@ internal class ObjCClassStubBuilder(
                 context.getKotlinClassFor(clazz, isMeta = false).type
         ).let { WrapperStubType(it) }
 
-        val superClassInit = SuperClassInit(companionSuper)
+        val superClassInit = SuperClassInit(companionSuper, emptyList())
         val companion = ClassStub.Companion(superClassInit, listOf(objCClassType))
         val classStub = buildClassStub(StubOrigin.ObjCClass(clazz), companion)
         return listOf(*metaContainerStub!!.build().toTypedArray(), classStub)

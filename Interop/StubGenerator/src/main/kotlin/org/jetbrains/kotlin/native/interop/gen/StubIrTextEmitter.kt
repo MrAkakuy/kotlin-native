@@ -24,7 +24,7 @@ class StubIrTextEmitter(
     private val kotlinFile = bridgeBuilderResult.kotlinFile
     private val nativeBridges = bridgeBuilderResult.nativeBridges
     private val propertyAccessorBridgeBodies = bridgeBuilderResult.propertyAccessorBridgeBodies
-    private val functionBridgeBodies = bridgeBuilderResult.functionBridgeBodies
+    private val functionalBridgeBodies = bridgeBuilderResult.functionalBridgeBodies
 
     private val pkgName: String
         get() = context.configuration.pkgName
@@ -236,13 +236,14 @@ class StubIrTextEmitter(
             val typeParameters = renderTypeParameters(element.typeParameters)
             val header = "${modality}fun$typeParameters $receiver${element.name.asSimpleName()}$parameters: ${renderStubType(element.returnType)}"
             when {
-                element.modality == MemberStubModality.ABSTRACT -> out(header)
                 element.external -> out("external $header")
                 element.isOptionalObjCMethod() -> out("$header = optional()")
                 owner != null && owner.isInterface -> out(header)
+                element.modality == MemberStubModality.ABSTRACT -> out(header)
+                element.kotlinFunctionAlias != null -> out("$header = ${element.kotlinFunctionAlias}")
                 else -> if (nativeBridges.isSupported(element)) {
                     block(header) {
-                        functionBridgeBodies.getValue(element).forEach(out)
+                        functionalBridgeBodies.getValue(element).forEach(out)
                     }
                 } else {
                     sequenceOf(
@@ -310,12 +311,34 @@ class StubIrTextEmitter(
         private tailrec fun getTopLevelPropertyDeclarationName(scope: KotlinScope, name: String): String =
                 scope.declareProperty(name) ?: getTopLevelPropertyDeclarationName(scope, name + "_")
 
-        override fun visitConstructor(constructorStub: ConstructorStub, owner: StubContainer?) {
-            constructorStub.annotations.forEach {
+        override fun visitConstructor(element: ConstructorStub, owner: StubContainer?) {
+            element.annotations.forEach {
                 out(renderAnnotation(it))
             }
-            val visibility = renderVisibilityModifier(constructorStub.visibility)
-            out("${visibility}constructor(${constructorStub.parameters.joinToString { renderFunctionParameter(it) }}) {}")
+            val visibility = renderVisibilityModifier(element.visibility)
+            val call = if (element.chainCall != null) {
+                val parameters = element.chainCall.joinToString { renderValueUsage(it) }
+                when (element.chainCallType) {
+                    ConstructorStub.ChainCallType.SUPER -> " : super($parameters)"
+                    ConstructorStub.ChainCallType.THIS -> " : this($parameters)"
+                }
+            } else ""
+            val header = "${visibility}constructor(${element.parameters.joinToString { renderFunctionParameter(it) }})$call"
+
+            when {
+                element.isDefault -> out(header)
+                owner != null && owner.isInterface -> out(header)
+                else -> if (nativeBridges.isSupported(element)) {
+                    block(header) {
+                        functionalBridgeBodies.getValue(element).forEach(out)
+                    }
+                } else {
+                    sequenceOf(
+                            annotationForUnableToImport,
+                            "$header = throw UnsupportedOperationException()"
+                    ).forEach(out)
+                }
+            }
         }
 
         override fun visitPropertyAccessor(propertyAccessor: PropertyAccessor, owner: StubContainer?) {
@@ -471,7 +494,7 @@ class StubIrTextEmitter(
     }
 
     private fun renderSuperInit(superClassInit: SuperClassInit): String {
-        val parameters = superClassInit.arguments.joinToString(prefix = "(", postfix = ")") { renderValueUsage(it) }
+        val parameters = superClassInit.arguments?.joinToString(prefix = "(", postfix = ")") { renderValueUsage(it) } ?: ""
         return "${renderStubType(superClassInit.type)}$parameters"
     }
 
@@ -484,6 +507,7 @@ class StubIrTextEmitter(
             "$classifier$typeArguments$nullability"
         }
         is SymbolicStubType -> stubType.name + if (stubType.nullable) "?" else ""
+        is ContextAllocationStubType -> "NativePlacement"
     }
 
     private fun renderValueUsage(value: ValueStub): String = when (value) {
@@ -491,6 +515,7 @@ class StubIrTextEmitter(
         is IntegralConstantStub -> renderIntegralConstant(value)!!
         is DoubleConstantStub -> renderDoubleConstant(value)!!
         is GetConstructorParameter -> value.constructorParameterStub.name
+        is ContextAllocationStub -> "context.alloc(size, align).reinterpret(), context"
     }
 
     private fun renderAnnotation(annotationStub: AnnotationStub): String = when (annotationStub) {
@@ -538,6 +563,8 @@ class StubIrTextEmitter(
             "@Deprecated(${annotationStub.message.quoteAsKotlinLiteral()}, " +
                     "ReplaceWith(${annotationStub.replaceWith.quoteAsKotlinLiteral()}), " +
                     "DeprecationLevel.ERROR)"
+        is AnnotationStub.PublishedApi ->
+            "@PublishedApi"
     }
 
     private fun renderEnumEntry(enumEntryStub: EnumEntryStub): String =
@@ -606,6 +633,13 @@ class StubIrTextEmitter(
             val getAddressExpression = propertyAccessorBridgeBodies.getValue(accessor)
             "interpretPointed$typeParameters($getAddressExpression)"
         }
+
+        is PropertyAccessor.Getter.InterpretCxxClassPointed -> {
+            val typeParameter = renderStubType(accessor.typeParameter)
+            val getAddressExpression = propertyAccessorBridgeBodies.getValue(accessor)
+            "$typeParameter(interpretPointed<CStructVar>($getAddressExpression))"
+        }
+
         is PropertyAccessor.Getter.ExternalGetter,
         is PropertyAccessor.Setter.ExternalSetter -> error("External property accessor shouldn't have a body!")
     }

@@ -38,10 +38,10 @@ fun Type.getStringRepresentation(): String = when (this) {
     is IntegerType -> this.spelling
     is FloatingType -> this.spelling
 
-    is PointerType, is ArrayType -> "void*"
-    //is LValueRefType -> "void*"
+    is PointerType, is ArrayType, is CxxClassPointerType -> "void*"
 
     is RecordType -> this.decl.spelling
+    is CxxClassType -> this.decl.spelling
 
     is EnumType -> if (this.def.isAnonymous) {
         this.def.baseType.getStringRepresentation()
@@ -71,7 +71,13 @@ private fun getStringRepresentationOfPointee(type: Type): String? {
     return when (unwrapped) {
         is PrimitiveType -> unwrapped.getStringRepresentation()
         is PointerType -> getStringRepresentationOfPointee(unwrapped.pointeeType)?.plus("*")
+        is CxxClassPointerType -> getStringRepresentationOfPointee(unwrapped.pointeeType)?.plus("*")
         is RecordType -> if (unwrapped.decl.isAnonymous || unwrapped.decl.spelling == "struct __va_list_tag") {
+            null
+        } else {
+            unwrapped.decl.spelling
+        }
+        is CxxClassType -> if (unwrapped.decl.isAnonymous || unwrapped.decl.spelling == "struct __va_list_tag") {
             null
         } else {
             unwrapped.decl.spelling

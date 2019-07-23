@@ -25,6 +25,9 @@ class StubIrContext(
                 if (platform == KotlinPlatform.JVM) {
                     add("jni.h")
                 }
+                if (configuration.library.language == Language.CPP) {
+                    add("new")
+                }
                 addAll(configuration.library.includes)
             },
             compilerArgs = configuration.library.compilerArgs,
@@ -75,6 +78,11 @@ class StubIrContext(
         val exportForwardDeclarations = configuration.exportForwardDeclarations.toMutableList()
 
         nativeIndex.structs
+                .filter { it.def == null }
+                .mapTo(exportForwardDeclarations) {
+                    "$cnamesStructsPackageName.${getKotlinName(it)}"
+                }
+        nativeIndex.cxxClasses
                 .filter { it.def == null }
                 .mapTo(exportForwardDeclarations) {
                     "$cnamesStructsPackageName.${getKotlinName(it)}"

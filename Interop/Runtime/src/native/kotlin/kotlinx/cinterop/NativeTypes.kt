@@ -41,6 +41,20 @@ fun <T : CVariable> typeOf(): CVariable.Type = throw Error("typeOf() is called w
  */
 @TypedIntrinsic(IntrinsicType.IDENTITY)
 external fun <T : NativePointed> interpretNullablePointed(ptr: NativePtr): T?
+/*
+@PublishedApi
+@TypedIntrinsic(IntrinsicType.CREATE_UNINITIALIZED_INSTANCE)
+internal external fun <T : CxxClass> createCxxClassInstance(): T
+
+fun <T : CxxClass> interpretCxxNullablePointed(ptr: NativePtr): T? {
+    if (ptr == nativeNullPtr) {
+        return null
+    } else {
+        val result = createCxxClassInstance<T>()
+        //result.rawPtr = ptr
+        return result
+    }
+}*/
 
 /**
  *  Performs type cast of the [CPointer] from the given raw pointer.

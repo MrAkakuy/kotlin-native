@@ -21,15 +21,7 @@ import clang.CXIdxEntityKind.*
 import clang.CXTypeKind.*
 import kotlinx.cinterop.*
 
-private class StructDeclImpl(
-        spelling: String,
-        override val location: Location,
-        override val bases: List<StructDecl>,
-        isAbstract: Boolean = false
-) : StructDecl(
-        spelling,
-        isAbstract
-) {
+private class StructDeclImpl(spelling: String, override val location: Location) : StructDecl(spelling) {
     override var def: StructDefImpl? = null
 }
 
@@ -40,14 +32,38 @@ private class StructDefImpl(
         size, align, decl
 ) {
     override val members = mutableListOf<StructMember>()
-
-    val uniqueMethods = mutableSetOf<FunctionDecl>()
-    override val functions get() = uniqueMethods.filter { !it.isStatic }.toList()
-    override val staticFunctions get() = uniqueMethods.filter { it.isStatic }.toList()
 }
 
 private class EnumDefImpl(spelling: String, type: Type, override val location: Location) : EnumDef(spelling, type) {
     override val constants = mutableListOf<EnumConstant>()
+}
+
+private class CxxClassDeclImpl(
+        spelling: String,
+        override val location: Location,
+        override val bases: List<CxxClassDecl>,
+        isAbstract: Boolean = false
+) : CxxClassDecl(
+        spelling,
+        isAbstract
+) {
+    override var def: CxxClassDefImpl? = null
+}
+
+private class CxxClassDefImpl(
+        size: Long, align: Int, decl: CxxClassDecl,
+        override val kind: Kind
+) : CxxClassDef(
+        size, align, decl
+) {
+    override val members = mutableListOf<StructMember>()
+
+    val uniqueConstructors = mutableSetOf<CxxClassConstructorDecl>()
+    override val constructors get() = uniqueConstructors.toList()
+
+    val uniqueFunctions = mutableSetOf<CxxClassFunctionDecl>()
+    override val functions get() = uniqueFunctions.filter { !it.isStatic }.toList()
+    override val staticFunctions get() = uniqueFunctions.filter { it.isStatic }.toList()
 }
 
 private interface ObjCContainerImpl {
@@ -132,10 +148,12 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
     override val structs: List<StructDecl> get() = structRegistry.included
     private val structRegistry = TypeDeclarationRegistry<StructDeclImpl>()
-    private val structMethodsById = mutableMapOf<DeclarationID, FunctionDecl>()
 
     override val enums: List<EnumDef> get() = enumRegistry.included
     private val enumRegistry = TypeDeclarationRegistry<EnumDefImpl>()
+
+    override val cxxClasses: List<CxxClassDecl> get() = cxxClassesRegistry.included
+    private val cxxClassesRegistry = TypeDeclarationRegistry<CxxClassDeclImpl>()
 
     override val objCClasses: List<ObjCClass> get() = objCClassRegistry.included
     private val objCClassRegistry = TypeDeclarationRegistry<ObjCClassImpl>()
@@ -150,9 +168,10 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
     private val typedefRegistry = TypeDeclarationRegistry<TypedefDef>()
 
     private val functionById = mutableMapOf<DeclarationID, FunctionDecl>()
+    private val cxxClassFunctionsById = mutableMapOf<DeclarationID, CxxClassFunctionDecl>()
+    private val cxxClassConstructorsById = mutableMapOf<DeclarationID, CxxClassConstructorDecl>()
 
-    override val functions: Collection<FunctionDecl>
-        get() = functionById.values
+    override val functions: Collection<FunctionDecl> get() = functionById.values
 
     override val macroConstants = mutableListOf<ConstantDef>()
     override val wrappedMacros = mutableListOf<WrappedMacroDef>()
@@ -188,8 +207,8 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
     }
 
     private fun getStructDeclAt(
-            cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null
-    ): StructDeclImpl = structRegistry.getOrPut(cursor, { createStructDecl(cursor, info) }) { decl ->
+            cursor: CValue<CXCursor>
+    ): StructDeclImpl = structRegistry.getOrPut(cursor, { createStructDecl(cursor) }) { decl ->
         val definitionCursor = clang_getCursorDefinition(cursor)
         if (clang_Cursor_isNull(definitionCursor) == 0) {
             assert(clang_isCursorDefinition(definitionCursor) != 0)
@@ -197,32 +216,11 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
-    private fun getStructBases(info: CXIdxDeclInfo? = null): List<StructDecl> {
-        if (info == null)
-            return listOf()
-
-        val cxxDeclInfo = clang_index_getCXXClassDeclInfo(info.ptr)?.pointed ?: return listOf()
-        val bases = cxxDeclInfo.bases ?: return listOf()
-
-        return bases.convertAndDispose(cxxDeclInfo.numBases).map {
-            val baseType = clang_getCursorType(it.cursor.readValue())
-            val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
-            structRegistry.included.find { it.spelling == baseSpelling }!!
-        }
-    }
-
-    private fun createStructDecl(cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null): StructDeclImpl {
+    private fun createStructDecl(cursor: CValue<CXCursor>): StructDeclImpl {
         val cursorType = clang_getCursorType(cursor)
         val typeSpelling = clang_getTypeSpelling(cursorType).convertAndDispose()
 
-        val bases = getStructBases(info)
-
-        val isAbstract = if (cursor.kind == CXCursorKind.CXCursor_ClassDecl)
-            clang_CXXRecord_isAbstract(cursor) != 0
-        else
-            false
-
-        return StructDeclImpl(typeSpelling, getLocation(cursor), bases, isAbstract)
+        return StructDeclImpl(typeSpelling, getLocation(cursor))
     }
 
     private fun createStructDef(structDecl: StructDeclImpl, cursor: CValue<CXCursor>) {
@@ -239,7 +237,6 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 when (cursor.kind) {
                     CXCursorKind.CXCursor_UnionDecl -> StructDef.Kind.UNION
                     CXCursorKind.CXCursor_StructDecl -> StructDef.Kind.STRUCT
-                    CXCursorKind.CXCursor_ClassDecl -> StructDef.Kind.CLASS
                     else -> error(cursor.kind)
                 }
         )
@@ -320,6 +317,69 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
             enumDef
         }
+    }
+
+    private fun getCxxClassBases(info: CXIdxDeclInfo? = null): List<CxxClassDecl> {
+        if (info == null)
+            return listOf()
+
+        val cxxDeclInfo = clang_index_getCXXClassDeclInfo(info.ptr)?.pointed ?: return listOf()
+        val bases = cxxDeclInfo.bases ?: return listOf()
+
+        // TODO:
+        return bases.convertAndDispose(cxxDeclInfo.numBases).map {
+            val baseType = clang_getCursorType(it.cursor.readValue())
+            val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
+            cxxClassesRegistry.included.find { it.spelling == baseSpelling }!!
+        }
+    }
+
+    private fun getCxxClassDeclAt(
+            cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null
+    ): CxxClassDeclImpl = cxxClassesRegistry.getOrPut(cursor, { createCxxClassDecl(cursor, info) }) { decl ->
+        val definitionCursor = clang_getCursorDefinition(cursor)
+        if (clang_Cursor_isNull(definitionCursor) == 0) {
+            assert(clang_isCursorDefinition(definitionCursor) != 0)
+            createCxxClassDef(decl, cursor)
+        }
+    }
+
+    private fun createCxxClassDecl(cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null): CxxClassDeclImpl {
+        val cursorType = clang_getCursorType(cursor)
+        val typeSpelling = clang_getTypeSpelling(cursorType).convertAndDispose()
+
+        val bases = getCxxClassBases(info)
+
+        val isAbstract = if (cursor.kind == CXCursorKind.CXCursor_ClassDecl)
+            clang_CXXRecord_isAbstract(cursor) != 0
+        else
+            false
+
+        return CxxClassDeclImpl(typeSpelling, getLocation(cursor), bases, isAbstract)
+    }
+
+    private fun createCxxClassDef(classDecl: CxxClassDeclImpl, cursor: CValue<CXCursor>) {
+        val type = clang_getCursorType(cursor)
+
+        val fields = mutableListOf<StructMember>()
+        addDeclaredFields(fields, type, type)
+
+        val size = clang_Type_getSizeOf(type)
+        val align = clang_Type_getAlignOf(type).toInt()
+
+        val classDef = CxxClassDefImpl(
+                size, align, classDecl,
+                when (cursor.kind) {
+                    CXCursorKind.CXCursor_UnionDecl -> StructDef.Kind.UNION
+                    CXCursorKind.CXCursor_StructDecl -> StructDef.Kind.STRUCT
+                    CXCursorKind.CXCursor_ClassDecl -> StructDef.Kind.CLASS
+                    else -> error(cursor.kind)
+                }
+        )
+
+        classDef.members += fields
+
+        classDecl.def = classDef
     }
 
     private fun getObjCCategoryClassCursor(cursor: CValue<CXCursor>): CValue<CXCursor> {
@@ -572,7 +632,14 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 }
             }
 
-            CXType_Record -> RecordType(getStructDeclAt(clang_getTypeDeclaration(type)))
+            CXType_Record -> {
+                when (library.language) {
+                    Language.C -> RecordType(getStructDeclAt(clang_getTypeDeclaration(type)))
+                    Language.CPP -> CxxClassType(getCxxClassDeclAt(clang_getTypeDeclaration(type)))
+                    else -> error(kind)
+                }
+            }
+
             CXType_Enum -> EnumType(getEnumDefAt(clang_getTypeDeclaration(type)))
 
             CXType_Pointer -> {
@@ -580,11 +647,15 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 val pointeeIsConst =
                         (clang_isConstQualifiedType(clang_getCanonicalType(pointeeType)) != 0)
 
-                val convertedPointeeType = convertType(pointeeType)
-                PointerType(
-                        if (convertedPointeeType == UnsupportedType) VoidType else convertedPointeeType,
-                        pointeeIsConst = pointeeIsConst
-                )
+                when (val convertedPointeeType = convertType(pointeeType)) {
+                    is CxxClassType -> CxxClassPointerType(convertedPointeeType, pointeeIsConst = pointeeIsConst)
+                    else -> {
+                        PointerType(
+                                if (convertedPointeeType == UnsupportedType) VoidType else convertedPointeeType,
+                                pointeeIsConst = pointeeIsConst
+                        )
+                    }
+                }
             }
 
             CXType_LValueReference -> {
@@ -592,11 +663,15 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 val pointeeIsConst =
                         (clang_isConstQualifiedType(clang_getCanonicalType(pointeeType)) != 0)
 
-                val convertedPointeeType = convertType(pointeeType)
-                LValueRefType(
-                        convertedPointeeType,
-                        pointeeIsConst = pointeeIsConst
-                )
+                when (val convertedPointeeType = convertType(pointeeType)) {
+                    is CxxClassType -> CxxClassLValueRefType(convertedPointeeType, pointeeIsConst = pointeeIsConst)
+                    else -> {
+                        LValueRefType(
+                                convertedPointeeType,
+                                pointeeIsConst = pointeeIsConst
+                        )
+                    }
+                }
             }
 
             CXType_ConstantArray -> {
@@ -805,17 +880,31 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                     // Skip anonymous struct.
                     // (It gets included anyway if used as a named field type).
                 } else {
-                    getStructDeclAt(cursor, info)
+                    when (library.language) {
+                        Language.C -> getStructDeclAt(cursor)
+                        Language.CPP -> getCxxClassDeclAt(cursor, info)
+                        else -> error(kind)
+                    }
                 }
             }
 
             CXIdxEntity_CXXInstanceMethod, CXIdxEntity_CXXStaticMethod -> {
                 if (isSuitableFunction(cursor)) {
-                    val owner = getStructDeclAt(info.semanticContainer!!.pointed.cursor.readValue())
-                    val method = structMethodsById.getOrPut(getDeclarationId(cursor)) {
-                        getFunction(cursor, owner)
+                    val owner = getCxxClassDeclAt(info.semanticContainer!!.pointed.cursor.readValue())
+                    val function = cxxClassFunctionsById.getOrPut(getDeclarationId(cursor)) {
+                        getCxxClassFunction(cursor, owner)
                     }
-                    owner.def!!.uniqueMethods.add(method)
+                    owner.def!!.uniqueFunctions.add(function)
+                }
+            }
+
+            CXIdxEntity_CXXConstructor -> {
+                if (isSuitableFunction(cursor)) {
+                    val owner = getCxxClassDeclAt(info.semanticContainer!!.pointed.cursor.readValue())
+                    val constructor = cxxClassConstructorsById.getOrPut(getDeclarationId(cursor)) {
+                        getCxxClassConstructor(cursor, owner)
+                    }
+                    owner.def!!.uniqueConstructors.add(constructor)
                 }
             }
 
@@ -907,7 +996,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
-    private fun getFunction(cursor: CValue<CXCursor>, owner: StructDecl? = null): FunctionDecl {
+    private fun getFunction(cursor: CValue<CXCursor>): FunctionDecl {
         val name = clang_getCursorSpelling(cursor).convertAndDispose()
         val returnType = convertType(clang_getCursorResultType(cursor), clang_getCursorResultTypeAttributes(cursor))
 
@@ -921,14 +1010,42 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val isDefined = (clang_Cursor_isNull(definitionCursor) == 0)
         val isVararg = clang_Cursor_isVariadic(cursor) != 0
 
-        return owner?.let {
-            val isStatic = clang_CXXMethod_isStatic(cursor) != 0
-            val isVirtual = clang_CXXMethod_isVirtual(cursor) != 0
-            val isPureVirtual = clang_CXXMethod_isPureVirtual(cursor) != 0
+        return FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg)
+    }
 
-            FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg,
-                         RecordType(it), isStatic, isVirtual, isPureVirtual)
-        } ?: FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg)
+    private fun getCxxClassFunction(cursor: CValue<CXCursor>, owner: CxxClassDecl): CxxClassFunctionDecl {
+        val name = clang_getCursorSpelling(cursor).convertAndDispose()
+        val returnType = convertType(clang_getCursorResultType(cursor), clang_getCursorResultTypeAttributes(cursor))
+
+        val parameters = getFunctionParameters(cursor)
+
+        val binaryName = when (library.language) {
+            Language.C, Language.OBJECTIVE_C, Language.CPP -> clang_Cursor_getMangling(cursor).convertAndDispose()
+        }
+
+        val definitionCursor = clang_getCursorDefinition(cursor)
+        val isDefined = (clang_Cursor_isNull(definitionCursor) == 0)
+        val isVararg = clang_Cursor_isVariadic(cursor) != 0
+        val isStatic = clang_CXXMethod_isStatic(cursor) != 0
+        val isVirtual = clang_CXXMethod_isVirtual(cursor) != 0
+        val isPureVirtual = clang_CXXMethod_isPureVirtual(cursor) != 0
+
+        return CxxClassFunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg,
+                                    owner, isStatic, isVirtual, isPureVirtual)
+    }
+
+    private fun getCxxClassConstructor(cursor: CValue<CXCursor>, owner: CxxClassDecl): CxxClassConstructorDecl {
+        val parameters = getFunctionParameters(cursor)
+
+        val binaryName = when (library.language) {
+            Language.C, Language.OBJECTIVE_C, Language.CPP -> clang_Cursor_getMangling(cursor).convertAndDispose()
+        }
+
+        val definitionCursor = clang_getCursorDefinition(cursor)
+        val isDefined = (clang_Cursor_isNull(definitionCursor) == 0)
+        val isVararg = clang_Cursor_isVariadic(cursor) != 0
+
+        return CxxClassConstructorDecl(parameters, binaryName, isDefined, isVararg, owner)
     }
 
     private fun getObjCMethod(cursor: CValue<CXCursor>): ObjCMethod? {

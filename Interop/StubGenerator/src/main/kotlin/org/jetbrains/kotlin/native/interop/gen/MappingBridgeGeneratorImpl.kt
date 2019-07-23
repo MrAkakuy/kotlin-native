@@ -38,7 +38,7 @@ class MappingBridgeGeneratorImpl(
         val bridgeArguments = mutableListOf<BridgeTypedKotlinValue>()
 
         kotlinValues.forEach { (type, value) ->
-            if (type.unwrapTypedefs() is RecordType) {
+            if (type.unwrapTypedefs() is RecordType || type.unwrapTypedefs() is CxxClassType) {
                 builder.pushMemScoped()
                 val bridgeArgument = "$value.getPointer(memScope).rawValue"
                 bridgeArguments.add(BridgeTypedKotlinValue(BridgedType.NATIVE_PTR, bridgeArgument))
@@ -52,7 +52,7 @@ class MappingBridgeGeneratorImpl(
         val kniRetVal = "kniRetVal"
         val bridgeReturnType = when (unwrappedReturnType) {
             VoidType -> BridgedType.VOID
-            is RecordType -> {
+            is RecordType, is CxxClassType -> {
                 val mirror = mirror(declarationMapper, returnType)
                 val tmpVarName = kniRetVal
                 // We clear in the finally block.
@@ -75,6 +75,8 @@ class MappingBridgeGeneratorImpl(
             kotlinValues.forEachIndexed { index, (type, _) ->
                 val unwrappedType = type.unwrapTypedefs()
                 if (unwrappedType is RecordType) {
+                    nativeValues.add("*(${unwrappedType.decl.spelling}*)${bridgeNativeValues[index]}")
+                } else if (unwrappedType is CxxClassType) {
                     nativeValues.add("*(${unwrappedType.decl.spelling}*)${bridgeNativeValues[index]}")
                 } else {
                     nativeValues.add(
@@ -102,6 +104,16 @@ class MappingBridgeGeneratorImpl(
                 is LValueRefType -> {
                     "&($nativeResult)"
                 }
+                is CxxClassType -> {
+                    val kniStructResult = "kniStructResult"
+
+                    out("${unwrappedReturnType.decl.spelling} $kniStructResult = $nativeResult;")
+                    out("memcpy(${bridgeNativeValues.last()}, &$kniStructResult, sizeof($kniStructResult));")
+                    ""
+                }
+                is CxxClassLValueRefType -> {
+                    "&($nativeResult)"
+                }
                 else -> {
                     nativeResult
                 }
@@ -110,7 +122,7 @@ class MappingBridgeGeneratorImpl(
 
         val result = when (unwrappedReturnType) {
             is VoidType -> callExpr
-            is RecordType -> {
+            is RecordType, is CxxClassType -> {
                 builder.out(callExpr)
                 "$kniRetVal.readValue()"
             }
@@ -136,6 +148,8 @@ class MappingBridgeGeneratorImpl(
         nativeValues.forEachIndexed { _, (type, value) ->
             val bridgeArgument = if (type.unwrapTypedefs() is RecordType) {
                 BridgeTypedNativeValue(BridgedType.NATIVE_PTR, "&$value")
+            } else if (type.unwrapTypedefs() is CxxClassType) {
+                BridgeTypedNativeValue(BridgedType.NATIVE_PTR, "&$value")
             } else {
                 val info = mirror(declarationMapper, type).info
                 BridgeTypedNativeValue(info.bridgedType, value)
@@ -148,6 +162,12 @@ class MappingBridgeGeneratorImpl(
         val bridgeReturnType = when (unwrappedReturnType) {
             VoidType -> BridgedType.VOID
             is RecordType -> {
+                val tmpVarName = kniRetVal
+                builder.out("${unwrappedReturnType.decl.spelling} $tmpVarName;")
+                bridgeArguments.add(BridgeTypedNativeValue(BridgedType.NATIVE_PTR, "&$tmpVarName"))
+                BridgedType.VOID
+            }
+            is CxxClassType -> {
                 val tmpVarName = kniRetVal
                 builder.out("${unwrappedReturnType.decl.spelling} $tmpVarName;")
                 bridgeArguments.add(BridgeTypedNativeValue(BridgedType.NATIVE_PTR, "&$tmpVarName"))
@@ -182,6 +202,9 @@ class MappingBridgeGeneratorImpl(
                 is RecordType -> {
                     "$kotlinResult.write(${bridgeKotlinValues.last()})"
                 }
+                is CxxClassType -> {
+                    "$kotlinResult.write(${bridgeKotlinValues.last()})"
+                }
                 is VoidType -> {
                     kotlinResult
                 }
@@ -194,6 +217,10 @@ class MappingBridgeGeneratorImpl(
         val result = when (unwrappedReturnType) {
             is VoidType -> callExpr
             is RecordType -> {
+                builder.out("$callExpr;")
+                kniRetVal
+            }
+            is CxxClassType -> {
                 builder.out("$callExpr;")
                 kniRetVal
             }
