@@ -19,10 +19,7 @@ import org.jetbrains.kotlin.descriptors.ModuleDescriptor
 import org.jetbrains.kotlin.incremental.components.NoLookupLocation
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.declarations.*
-import org.jetbrains.kotlin.ir.expressions.IrCall
-import org.jetbrains.kotlin.ir.expressions.IrConstructorCall
-import org.jetbrains.kotlin.ir.expressions.IrFunctionAccessExpression
-import org.jetbrains.kotlin.ir.expressions.IrGetField
+import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.types.isNothing
@@ -226,43 +223,43 @@ internal object DataFlowIR {
 
         object Null : Node()
 
-        open class Call(val callee: FunctionSymbol, val arguments: List<Edge>,
+        open class Call(val callee: FunctionSymbol, val arguments: List<Edge>, val returnType: Type,
                         open val irCallSite: IrFunctionAccessExpression?) : Node()
 
         class StaticCall(callee: FunctionSymbol, arguments: List<Edge>,
-                         val receiverType: Type?, irCallSite: IrFunctionAccessExpression?)
-            : Call(callee, arguments, irCallSite)
+                         val receiverType: Type?, returnType: Type, irCallSite: IrFunctionAccessExpression?)
+            : Call(callee, arguments, returnType, irCallSite)
 
         // TODO: It can be replaced with a pair(AllocInstance, constructor Call), remove.
-        class NewObject(constructor: FunctionSymbol, arguments: List<Edge>, val constructedType: Type,
-                        override val irCallSite: IrConstructorCall?)
-            : Call(constructor, arguments, irCallSite)
+        class NewObject(constructor: FunctionSymbol, arguments: List<Edge>,
+                        val constructedType: Type, override val irCallSite: IrConstructorCall?)
+            : Call(constructor, arguments, constructedType, irCallSite)
 
         open class VirtualCall(callee: FunctionSymbol, arguments: List<Edge>,
-                                   val receiverType: Type, override val irCallSite: IrCall?)
-            : Call(callee, arguments, irCallSite)
+                                   val receiverType: Type, returnType: Type, override val irCallSite: IrCall?)
+            : Call(callee, arguments, returnType, irCallSite)
 
         class VtableCall(callee: FunctionSymbol, receiverType: Type, val calleeVtableIndex: Int,
-                         arguments: List<Edge>, irCallSite: IrCall?)
-            : VirtualCall(callee, arguments, receiverType, irCallSite)
+                         arguments: List<Edge>, returnType: Type, irCallSite: IrCall?)
+            : VirtualCall(callee, arguments, receiverType, returnType, irCallSite)
 
         class ItableCall(callee: FunctionSymbol, receiverType: Type, val calleeHash: Long,
-                         arguments: List<Edge>, irCallSite: IrCall?)
-            : VirtualCall(callee, arguments, receiverType, irCallSite)
+                         arguments: List<Edge>, returnType: Type, irCallSite: IrCall?)
+            : VirtualCall(callee, arguments, receiverType, returnType, irCallSite)
 
         class Singleton(val type: Type, val constructor: FunctionSymbol?) : Node()
 
         class AllocInstance(val type: Type) : Node()
 
-        class FunctionReference(val symbol: FunctionSymbol, val type: Type) : Node()
+        class FunctionReference(val symbol: FunctionSymbol, val type: Type, val returnType: Type) : Node()
 
-        class FieldRead(val receiver: Edge?, val field: Field, val ir: IrGetField?) : Node()
+        class FieldRead(val receiver: Edge?, val field: Field, val type: Type, val ir: IrGetField?) : Node()
 
-        class FieldWrite(val receiver: Edge?, val field: Field, val value: Edge) : Node()
+        class FieldWrite(val receiver: Edge?, val field: Field, val value: Edge, val type: Type) : Node()
 
-        class ArrayRead(val array: Edge, val index: Edge, val irCallSite: IrCall?) : Node()
+        class ArrayRead(val array: Edge, val index: Edge, val type: Type, val irCallSite: IrCall?) : Node()
 
-        class ArrayWrite(val array: Edge, val index: Edge, val value: Edge) : Node()
+        class ArrayWrite(val array: Edge, val index: Edge, val value: Edge, val type: Type) : Node()
 
         class Variable(values: List<Edge>, val type: Type, val kind: VariableKind) : Node() {
             val values = mutableListOf<Edge>().also { it += values }
@@ -554,7 +551,8 @@ internal object DataFlowIR {
                             primitiveBinaryType,
                             module,
                             -1,
-                            null
+                            null,
+                            takeName { primitiveBinaryType.name }
                     )
                 }
 
@@ -602,15 +600,15 @@ internal object DataFlowIR {
             }
             val symbol = when {
                 it.isExternal || (it.symbol in context.irBuiltIns.irBuiltInsSymbols) -> {
-                    val escapesAnnotation = it.descriptor.annotations.findAnnotation(FQ_NAME_ESCAPES)
-                    val pointsToAnnotation = it.descriptor.annotations.findAnnotation(FQ_NAME_POINTS_TO)
+                    val escapesAnnotation = it.annotations.findAnnotation(FQ_NAME_ESCAPES)
+                    val pointsToAnnotation = it.annotations.findAnnotation(FQ_NAME_POINTS_TO)
                     @Suppress("UNCHECKED_CAST")
-                    val escapesBitMask = (escapesAnnotation?.allValueArguments?.get(escapesWhoDescriptor.name) as? ConstantValue<Int>)?.value
+                    val escapesBitMask = (escapesAnnotation?.getValueArgument(0) as? IrConst<Int>)?.value
                     @Suppress("UNCHECKED_CAST")
-                    val pointsToBitMask = (pointsToAnnotation?.allValueArguments?.get(pointsToOnWhomDescriptor.name) as? ConstantValue<List<IntValue>>)?.value
+                    val pointsToBitMask = (pointsToAnnotation?.getValueArgument(0) as? IrVararg)?.elements?.map { (it as IrConst<Int>).value }
                     FunctionSymbol.External(name.localHash.value, attributes, it, takeName { name }).apply {
                         escapes  = escapesBitMask
-                        pointsTo = pointsToBitMask?.let { it.map { it.value }.toIntArray() }
+                        pointsTo = pointsToBitMask?.let { it.toIntArray() }
                     }
                 }
 

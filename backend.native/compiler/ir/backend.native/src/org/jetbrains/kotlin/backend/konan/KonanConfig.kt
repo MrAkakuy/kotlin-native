@@ -44,9 +44,16 @@ class KonanConfig(val project: Project, val configuration: CompilerConfiguration
 
     val infoArgsOnly = configuration.kotlinSourceRoots.isEmpty() && !linkOnly
 
+    // TODO: debug info generation mode and debug/release variant selection probably requires some refactoring.
     val debug: Boolean get() = configuration.getBoolean(KonanConfigKeys.DEBUG)
+    val lightDebug: Boolean get() = configuration.getBoolean(KonanConfigKeys.LIGHT_DEBUG)
 
     val memoryModel: MemoryModel get() = configuration.get(KonanConfigKeys.MEMORY_MODEL)!!
+
+    val needCompilerVerification: Boolean
+        get() = configuration.get(KonanConfigKeys.VERIFY_COMPILER) ?:
+            (configuration.getBoolean(KonanConfigKeys.OPTIMIZATION) ||
+                KonanVersion.CURRENT.meta != MetaVersion.RELEASE)
 
     init {
         if (!platformManager.isEnabled(target)) {

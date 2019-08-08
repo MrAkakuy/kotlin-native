@@ -40,8 +40,10 @@
 #define TRACE_GC 0
 // Collect memory manager events statistics.
 #define COLLECT_STATISTIC 0
-// Auto-adjust GC thresholds.
-#define GC_ERGONOMICS 1
+
+#if COLLECT_STATISTIC
+#include <algorithm>
+#endif
 
 namespace {
 
@@ -70,19 +72,19 @@ static_assert(sizeof(ContainerHeader) % kObjectAlignment == 0, "sizeof(Container
 #if USE_GC
 // Collection threshold default (collect after having so many elements in the
 // release candidates set).
-constexpr size_t kGcThreshold = 16 * 1024;
-#if GC_ERGONOMICS
+constexpr size_t kGcThreshold = 8 * 1024;
 // Ergonomic thresholds.
 // If GC to computations time ratio is above that value,
 // increase GC threshold by 1.5 times.
 constexpr double kGcToComputeRatioThreshold = 0.5;
 // Never exceed this value when increasing GC threshold.
-constexpr size_t kMaxErgonomicThreshold = 4 * 1024;
-#endif  // GC_ERGONOMICS
+constexpr size_t kMaxErgonomicThreshold = 16 * 1024;
 // Threshold of size for toFree set, triggering actual cycle collector.
 constexpr size_t kMaxToFreeSize = 8 * 1024;
 // How many elements in finalizer queue allowed before cleaning it up.
 constexpr size_t kFinalizerQueueThreshold = 32;
+// If allocated that much memory since last GC - force new GC.
+constexpr size_t kMaxGcAllocThreshold = 8 * 1024 * 1024;
 #endif  // USE_GC
 
 typedef KStdUnorderedSet<ContainerHeader*> ContainerHeaderSet;
@@ -319,10 +321,11 @@ struct MemoryState {
   // Objects to be released.
   ContainerHeaderList* toRelease;
 
-#if GC_ERGONOMICS
+  bool gcErgonomics;
   uint64_t lastGcTimestamp;
-#endif
 
+  uint64_t allocSinceLastGc;
+  uint64_t allocSinceLastGcThreshold;
 #endif // USE_GC
 
 #if COLLECT_STATISTIC
@@ -684,6 +687,10 @@ ContainerHeader* allocContainer(MemoryState* state, size_t size) {
   }
 #endif
   if (result == nullptr) {
+#if USE_GC
+    if (state != nullptr)
+        state->allocSinceLastGc += size;
+#endif
     result = konanConstructSizedInstance<ContainerHeader>(alignUp(size, kObjectAlignment));
     atomicAdd(&allocCount, 1);
   }
@@ -1011,14 +1018,12 @@ inline void initGcThreshold(MemoryState* state, uint32_t gcThreshold) {
   state->toRelease->reserve(gcThreshold);
 }
 
-#if GC_ERGONOMICS
 inline void increaseGcThreshold(MemoryState* state) {
   auto newThreshold = state->gcThreshold * 3 / 2 + 1;
   if (newThreshold <= kMaxErgonomicThreshold) {
     initGcThreshold(state, newThreshold);
   }
 }
-#endif  // GC_ERGONOMICS
 
 #endif // USE_GC
 
@@ -1398,18 +1403,20 @@ void decrementStack(MemoryState* state) {
 void garbageCollect(MemoryState* state, bool force) {
   RuntimeAssert(!state->gcInProgress, "Recursive GC is disallowed");
 
+  uint64_t allocSinceLastGc = state->allocSinceLastGc;
+  state->allocSinceLastGc = 0;
+
   if (!IsStrictMemoryModel) {
     // In relaxed model we just process finalizer queue and be done with it.
     processFinalizerQueue(state);
     return;
   }
 
-  GC_LOG(">>> %s GC: threshold = %d toFree %d toRelease %d\n", \
-     force ? "forced" : "regular", state->gcThreshold, state->toFree->size(), state->toRelease->size())
+  GC_LOG(">>> %s GC: threshold = %d toFree %d toRelease %d alloc = %lld\n", \
+     force ? "forced" : "regular", state->gcThreshold, state->toFree->size(),
+     state->toRelease->size(), allocSinceLastGc)
 
-#if GC_ERGONOMICS
   auto gcStartTime = konan::getTimeMicros();
-#endif
 
   state->gcInProgress = true;
 
@@ -1419,13 +1426,9 @@ void garbageCollect(MemoryState* state, bool force) {
   decrementStack(state);
   size_t afterDecrements = state->toRelease->size();
   ssize_t stackReferences = afterDecrements - beforeDecrements;
-  if (stackReferences * 5 > state->gcThreshold) {
-#if GC_ERGONOMICS
-     increaseGcThreshold(state);
-     GC_LOG("||| GC: too many stack references, increased threshold to \n", state->gcThreshold);
-#else
-     GC_LOG("Too many stack references for the threshold: %d vs %d\n", stackReferences, state->gcThreshold)
-#endif
+  if (state->gcErgonomics && stackReferences * 5 > state->gcThreshold) {
+    increaseGcThreshold(state);
+    GC_LOG("||| GC: too many stack references, increased threshold to \n", state->gcThreshold);
   }
 
   GC_LOG("||| GC: toFree %d toRelease %d\n", state->toFree->size(), state->toRelease->size())
@@ -1440,18 +1443,16 @@ void garbageCollect(MemoryState* state, bool force) {
   }
 
   state->gcInProgress = false;
-
-#if GC_ERGONOMICS
   auto gcEndTime = konan::getTimeMicros();
-  auto gcToComputeRatio = double(gcEndTime - gcStartTime) / (gcStartTime - state->lastGcTimestamp + 1);
-  if (gcToComputeRatio > kGcToComputeRatioThreshold) {
-     increaseGcThreshold(state);
-     GC_LOG("Adjusting GC threshold to %d\n", state->gcThreshold);
+  if (state->gcErgonomics) {
+    auto gcToComputeRatio = double(gcEndTime - gcStartTime) / (gcStartTime - state->lastGcTimestamp + 1);
+    if (gcToComputeRatio > kGcToComputeRatioThreshold) {
+      increaseGcThreshold(state);
+      GC_LOG("Adjusting GC threshold to %d\n", state->gcThreshold);
+    }
   }
   GC_LOG("GC: duration=%lld sinceLast=%lld\n", (gcEndTime - gcStartTime), gcStartTime - state->lastGcTimestamp);
   state->lastGcTimestamp = gcEndTime;
-#endif
-
   GC_LOG("<<< GC: toFree %d toRelease %d\n", state->toFree->size(), state->toRelease->size())
 }
 
@@ -1499,6 +1500,8 @@ MemoryState* initMemory() {
   memoryState->gcSuspendCount = 0;
   memoryState->toRelease = konanConstructInstance<ContainerHeaderList>();
   initGcThreshold(memoryState, kGcThreshold);
+  memoryState->allocSinceLastGcThreshold = kMaxGcAllocThreshold;
+  memoryState->gcErgonomics = true;
 #endif
   atomicAdd(&aliveMemoryStatesCount, 1);
   return memoryState;
@@ -1549,7 +1552,6 @@ MemoryState* suspendMemory() {
 }
 
 void resumeMemory(MemoryState* state) {
-    RuntimeAssert(::memoryState == nullptr, "Cannot schedule on existing state");
     ::memoryState = state;
 }
 
@@ -1579,7 +1581,7 @@ void setHeapRef(ObjHeader** location, const ObjHeader* object) {
 void zeroHeapRef(ObjHeader** location) {
   MEMORY_LOG("ZeroHeapRef %p\n", location)
   auto* value = *location;
-  if (value != nullptr) {
+  if (reinterpret_cast<uintptr_t>(value) > 1) {
     UPDATE_REF_EVENT(memoryState, value, nullptr, location, 0);
     *location = nullptr;
     ReleaseHeapRef(value);
@@ -1658,10 +1660,22 @@ void updateHeapRefIfNull(ObjHeader** location, const ObjHeader* object) {
   }
 }
 
+inline void checkIfGcNeeded(MemoryState* state) {
+  if (state != nullptr && state->allocSinceLastGc > state->allocSinceLastGcThreshold) {
+    // To avoid GC trashing check that at least 10ms passed since last GC.
+    if (konan::getTimeMicros() - state->lastGcTimestamp > 10 * 1000) {
+      garbageCollect(state, false);
+    }
+  }
+}
+
 template <bool Strict>
 OBJ_GETTER(allocInstance, const TypeInfo* type_info) {
   RuntimeAssert(type_info->instanceSize_ >= 0, "must be an object");
   auto* state = memoryState;
+#if USE_GC
+  checkIfGcNeeded(state);
+#endif  // USE_GC
   auto container = ObjectContainer(state, type_info);
 #if USE_GC
   if (Strict) {
@@ -1678,6 +1692,9 @@ OBJ_GETTER(allocArrayInstance, const TypeInfo* type_info, int32_t elements) {
   RuntimeAssert(type_info->instanceSize_ < 0, "must be an array");
   if (elements < 0) ThrowIllegalArgumentException();
   auto* state = memoryState;
+#if USE_GC
+  checkIfGcNeeded(state);
+#endif  // USE_GC
   auto container = ArrayContainer(state, type_info, elements);
 #if USE_GC
   if (Strict) {
@@ -1917,15 +1934,37 @@ void startGC() {
 }
 
 void setGCThreshold(KInt value) {
-  GC_LOG("Kotlin_native_internal_setThreshold %d\n", value)
+  GC_LOG("setGCThreshold %d\n", value)
   if (value > 0) {
     initGcThreshold(memoryState, value);
   }
 }
 
 KInt getGCThreshold() {
-  GC_LOG("Kotlin_native_internal_getThreshold %d\n")
+  GC_LOG("getGCThreshold\n")
   return memoryState->gcThreshold;
+}
+
+void setGCThresholdAllocations(KLong value) {
+  GC_LOG("setGCThresholdAllocations %lld\n", value)
+  if (value > 0) {
+    memoryState->allocSinceLastGcThreshold = value;
+  }
+}
+
+KLong getGCThresholdAllocations() {
+  GC_LOG("getGCThresholdAllocation\n")
+  return memoryState->allocSinceLastGcThreshold;
+}
+
+void setTuneGCThreshold(KBoolean value) {
+  GC_LOG("setTuneGCThreshold %d\n", value)
+  memoryState->gcErgonomics = value;
+}
+
+KBoolean getTuneGCThreshold() {
+  GC_LOG("getTuneGCThreshold %d\n")
+  return memoryState->gcErgonomics;
 }
 
 KNativePtr createStablePointer(KRef any) {
@@ -2300,11 +2339,11 @@ void ObjHeader::destroyMetaObject(TypeInfo** location) {
 
 void ObjectContainer::Init(MemoryState* state, const TypeInfo* typeInfo) {
   RuntimeAssert(typeInfo->instanceSize_ >= 0, "Must be an object");
-  uint32_t alloc_size = sizeof(ContainerHeader) + typeInfo->instanceSize_;
-  header_ = allocContainer(state, alloc_size);
+  uint32_t allocSize = sizeof(ContainerHeader) + typeInfo->instanceSize_;
+  header_ = allocContainer(state, allocSize);
   RuntimeCheck(header_ != nullptr, "Cannot alloc memory");
   // One object in this container, no need to set.
-  header_->setContainerSize(alloc_size);
+  header_->setContainerSize(allocSize);
   RuntimeAssert(header_->objectCount() == 1, "Must work properly");
   // header->refCount_ is zero initialized by allocContainer().
   SetHeader(GetPlace(), typeInfo);
@@ -2313,12 +2352,12 @@ void ObjectContainer::Init(MemoryState* state, const TypeInfo* typeInfo) {
 
 void ArrayContainer::Init(MemoryState* state, const TypeInfo* typeInfo, uint32_t elements) {
   RuntimeAssert(typeInfo->instanceSize_ < 0, "Must be an array");
-  uint32_t alloc_size =
+  uint32_t allocSize =
       sizeof(ContainerHeader) + arrayObjectSize(typeInfo, elements);
-  header_ = allocContainer(state, alloc_size);
+  header_ = allocContainer(state, allocSize);
   RuntimeCheck(header_ != nullptr, "Cannot alloc memory");
   // One object in this container, no need to set.
-  header_->setContainerSize(alloc_size);
+  header_->setContainerSize(allocSize);
   RuntimeAssert(header_->objectCount() == 1, "Must work properly");
   // header->refCount_ is zero initialized by allocContainer().
   GetPlace()->count_ = elements;
@@ -2614,6 +2653,34 @@ KInt Kotlin_native_internal_GC_getThreshold(KRef) {
   return getGCThreshold();
 #else
   return -1;
+#endif
+}
+
+void Kotlin_native_internal_GC_setThresholdAllocations(KRef, KLong value) {
+#if USE_GC
+  setGCThresholdAllocations(value);
+#endif
+}
+
+KLong Kotlin_native_internal_GC_getThresholdAllocations(KRef) {
+#if USE_GC
+  return getGCThresholdAllocations();
+#else
+  return -1;
+#endif
+}
+
+void Kotlin_native_internal_GC_setTuneThreshold(KRef, KInt value) {
+#if USE_GC
+  setTuneGCThreshold(value);
+#endif
+}
+
+KBoolean Kotlin_native_internal_GC_getTuneThreshold(KRef) {
+#if USE_GC
+  return getTuneGCThreshold();
+#else
+  return false;
 #endif
 }
 

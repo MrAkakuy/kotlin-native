@@ -41,7 +41,7 @@ import org.jetbrains.kotlin.konan.*
 // Run './gradlew wrapper --gradle-version <version>' to update all the wrappers.
 apply plugin: org.jetbrains.kotlin.GradleWrappers
 
-wrappers.projects = ['samples', 'samples/calculator', 'samples/androidNativeActivity', 'samples/curl']
+wrappers.projects = ['samples', 'samples/calculator', 'samples/androidNativeActivity', 'samples/cocoapods/kotlin-library']
 wrapper.distributionType = Wrapper.DistributionType.ALL
 
 defaultTasks 'clean', 'dist'
@@ -67,12 +67,7 @@ ext {
     kotlinUtilKlibModule="org.jetbrains.kotlin:kotlin-util-klib:${kotlinVersion}"
 
     konanVersionFull = KonanVersionGeneratedKt.getCurrentKonanVersion()
-
-    if (konanVersionFull.meta == MetaVersion.RELEASE) {
-        gradlePluginVersion = kotlinVersion
-    } else {
-        gradlePluginVersion = "$kotlinVersion-native-$konanVersionFull"
-    }
+    gradlePluginVersion = konanVersionFull
 }
 
 allprojects {
@@ -192,14 +187,6 @@ task gradlePluginCheck {
     dependsOn gradle.includedBuild('kotlin-native-gradle-plugin').task(':check')
 }
 
-task gradlePluginUpload {
-    dependsOn gradle.includedBuild('kotlin-native-gradle-plugin').task(':bintrayUpload')
-    // Publish releases to the plugin-portal too.
-    if (konanVersionFull.meta == MetaVersion.RELEASE) {
-        dependsOn gradle.includedBuild('kotlin-native-gradle-plugin').task(':publishPlugins')
-    }
-}
-
 task dist_compiler(dependsOn: "distCompiler")
 task dist_runtime(dependsOn: "distRuntime")
 task cross_dist(dependsOn: "crossDist")
@@ -239,6 +226,7 @@ task distCompiler(type: Copy) {
     dependsOn ':utilities:jar'
     dependsOn ':klib:jar'
     dependsOn ':sharedJar'
+    dependsOn ':endorsedLibraries:jvmJar'
 
     destinationDir distDir
 
@@ -298,6 +286,10 @@ task distCompiler(type: Copy) {
         into('konan/lib')
     }
 
+    from(project(':endorsedLibraries:kliopt').file('build/libs')) {
+        into('konan/lib')
+    }
+
     from(file("${gradle.includedBuild('kotlin-native-shared').projectDir}/build/libs")) {
         into('konan/lib')
     }
@@ -336,7 +328,13 @@ task distRuntime(type: Copy) {
     dependsOn('commonDistRuntime')
 }
 
+task distEndorsedLibraries {
+    dependsOn "${hostName}CrossDistEndorsedLibraries"
+}
+
 def stdlib = 'klib/common/stdlib'
+def endorsedLibs = 'klib/common/endorsedLibraries'
+def endorsedLibsBase = 'klib/common'
 
 task commonDistRuntime(type: Copy) {
     destinationDir distDir
@@ -351,6 +349,10 @@ task commonDistRuntime(type: Copy) {
 task crossDistRuntime(type: Copy) {
     dependsOn.addAll(targetList.collect { "${it}CrossDistRuntime" })
     dependsOn('commonDistRuntime')
+}
+
+task crossDistEndorsedLibraries(type: Copy) {
+    dependsOn.addAll(targetList.collect { "${it}CrossDistEndorsedLibraries" })
 }
 
 task crossDistPlatformLibs {
@@ -391,7 +393,17 @@ targetList.each { target ->
     }
 
     task("${target}CrossDist") {
-        dependsOn "${target}CrossDistRuntime", 'distCompiler', 'commonDistRuntime'
+        dependsOn "${target}CrossDistRuntime", 'distCompiler', 'commonDistRuntime', "${target}CrossDistEndorsedLibraries"
+    }
+
+    task("${target}CrossDistEndorsedLibraries", type: Copy) {
+        dependsOn ":endorsedLibraries:${target}EndorsedLibraries"
+
+        destinationDir distDir
+        from(project(':endorsedLibraries').file("build")) {
+            include('**')
+            into("$endorsedLibsBase")
+        }
     }
 }
 
@@ -400,11 +412,11 @@ task distPlatformLibs {
 }
 
 task dist {
-    dependsOn 'distCompiler', 'distRuntime'
+    dependsOn 'distCompiler', 'distRuntime', 'distEndorsedLibraries'
 }
 
 task crossDist {
-    dependsOn 'crossDistRuntime', 'distCompiler'
+    dependsOn 'crossDistRuntime', 'distCompiler', 'crossDistEndorsedLibraries'
 }
 
 task bundle(type: (isWindows()) ? Zip : Tar) {
