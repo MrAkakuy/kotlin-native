@@ -38,6 +38,14 @@ private class EnumDefImpl(spelling: String, type: Type, override val location: L
     override val constants = mutableListOf<EnumConstant>()
 }
 
+private class FunctionDeclImpl(
+        name: String, parameters: List<Parameter>, returnType: Type,
+        override val location: Location,
+        binaryName: String, isDefined: Boolean, isVararg: Boolean
+) : FunctionDecl(
+        name, parameters, returnType, binaryName, isDefined, isVararg
+)
+
 private class CxxClassDeclImpl(
         spelling: String,
         override val location: Location,
@@ -52,9 +60,10 @@ private class CxxClassDeclImpl(
 
 private class CxxClassDefImpl(
         size: Long, align: Int, decl: CxxClassDecl,
-        override val kind: Kind
+        override val kind: Kind,
+        destructor: CxxClassFunctionDeclImpl
 ) : CxxClassDef(
-        size, align, decl
+        size, align, decl, destructor
 ) {
     override val members = mutableListOf<StructMember>()
 
@@ -66,11 +75,26 @@ private class CxxClassDefImpl(
     override val staticFunctions get() = uniqueFunctions.filter { it.isStatic }.toList()
 }
 
+private class CxxNamespaceDeclImpl(
+        spelling: String,
+        parent: CxxNamespaceDeclImpl?,
+        override val location: Location
+) : CxxNamespaceDecl(spelling, parent)
+
 private interface ObjCContainerImpl {
     val protocols: MutableList<ObjCProtocol>
     val methods: MutableList<ObjCMethod>
     val properties: MutableList<ObjCProperty>
 }
+
+private class CxxClassFunctionDeclImpl(
+        name: String, parameters: List<Parameter>, returnType: Type,
+        override val location: Location,
+        binaryName: String, isDefined: Boolean, isVararg: Boolean, owner: CxxClassDecl,
+        isStatic: Boolean = false, isVirtual: Boolean = false, isPureVirtual: Boolean = false
+) : CxxClassFunctionDecl(
+        name, parameters, returnType, binaryName, isDefined, isVararg, owner, isStatic, isVirtual, isPureVirtual
+)
 
 private class ObjCProtocolImpl(
         name: String,
@@ -151,6 +175,9 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
     override val enums: List<EnumDef> get() = enumRegistry.included
     private val enumRegistry = TypeDeclarationRegistry<EnumDefImpl>()
+
+    override val cxxNamespaces: List<CxxNamespaceDecl> get() = cxxNamespacesRegistry.included
+    private val cxxNamespacesRegistry = TypeDeclarationRegistry<CxxNamespaceDeclImpl>()
 
     override val cxxClasses: List<CxxClassDecl> get() = cxxClassesRegistry.included
     private val cxxClassesRegistry = TypeDeclarationRegistry<CxxClassDeclImpl>()
@@ -321,16 +348,16 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
     private fun getCxxClassBases(info: CXIdxDeclInfo? = null): List<CxxClassDecl> {
         if (info == null)
-            return listOf()
+            return emptyList()
 
-        val cxxDeclInfo = clang_index_getCXXClassDeclInfo(info.ptr)?.pointed ?: return listOf()
-        val bases = cxxDeclInfo.bases ?: return listOf()
+        val cxxDeclInfo = clang_index_getCXXClassDeclInfo(info.ptr)?.pointed ?: return emptyList()
+        val bases = cxxDeclInfo.bases ?: return emptyList()
 
         // TODO:
-        return bases.convertAndDispose(cxxDeclInfo.numBases).map {
+        return bases.convertAndDispose(cxxDeclInfo.numBases).mapNotNull {
             val baseType = clang_getCursorType(it.cursor.readValue())
             val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
-            cxxClassesRegistry.included.find { it.spelling == baseSpelling }!!
+            cxxClassesRegistry.included.find { it.spelling == baseSpelling }
         }
     }
 
@@ -374,7 +401,20 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                     CXCursorKind.CXCursor_StructDecl -> StructDef.Kind.STRUCT
                     CXCursorKind.CXCursor_ClassDecl -> StructDef.Kind.CLASS
                     else -> error(cursor.kind)
-                }
+                },
+                CxxClassFunctionDeclImpl(
+                        "~${classDecl.spelling.split("::").last()}",
+                        emptyList(),
+                        returnType = VoidType,
+                        location = classDecl.location,
+                        binaryName = "",
+                        isDefined = true,
+                        isVararg = false,
+                        owner = classDecl,
+                        isStatic = false,
+                        isVirtual = true,
+                        isPureVirtual = false
+                )
         )
 
         classDef.members += fields
@@ -516,13 +556,13 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
         if (underlying == UnsupportedType) return underlying
 
-        if (clang_getCursorLexicalParent(declCursor).kind != CXCursorKind.CXCursor_TranslationUnit) {
-            // Objective-C type parameters are represented as non-top-level typedefs.
-            // Erase for now:
-            return underlying
-        }
-
         if (library.language == Language.OBJECTIVE_C) {
+            if (clang_getCursorLexicalParent(declCursor).kind != CXCursorKind.CXCursor_TranslationUnit) {
+                // Objective-C type parameters are represented as non-top-level typedefs.
+                // Erase for now:
+                return underlying
+            }
+
             if (name == "BOOL" || name == "Boolean") {
                 assert(clang_Type_getSizeOf(type) == 1L)
                 return ObjCBoolType
@@ -633,10 +673,17 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
             }
 
             CXType_Record -> {
-                when (library.language) {
-                    Language.C -> RecordType(getStructDeclAt(clang_getTypeDeclaration(type)))
-                    Language.CPP -> CxxClassType(getCxxClassDeclAt(clang_getTypeDeclaration(type)))
-                    else -> error(kind)
+                when (val declSpelling = clang_getTypeSpelling(type).convertAndDispose()) {
+                    "std::__cxx11::basic_string<char>" -> PointerType(CharType, true)
+                    else -> {
+                        if (declSpelling.contains("<") || declSpelling.startsWith("std::"))
+                            PointerType(VoidType)
+                        else when (library.language) {
+                            Language.C -> RecordType(getStructDeclAt(clang_getTypeDeclaration(type)))
+                            Language.CPP -> CxxClassType(getCxxClassDeclAt(clang_getTypeDeclaration(type)))
+                            else -> error(kind)
+                        }
+                    }
                 }
             }
 
@@ -649,6 +696,12 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
                 when (val convertedPointeeType = convertType(pointeeType)) {
                     is CxxClassType -> CxxClassPointerType(convertedPointeeType, pointeeIsConst = pointeeIsConst)
+                    is LValueRefType -> {
+                        PointerType(
+                                if (convertedPointeeType.pointeeType == UnsupportedType) VoidType else convertedPointeeType.pointeeType,
+                                pointeeIsConst = pointeeIsConst
+                        )
+                    }
                     else -> {
                         PointerType(
                                 if (convertedPointeeType == UnsupportedType) VoidType else convertedPointeeType,
@@ -664,6 +717,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                         (clang_isConstQualifiedType(clang_getCanonicalType(pointeeType)) != 0)
 
                 when (val convertedPointeeType = convertType(pointeeType)) {
+                    is PointerType -> convertedPointeeType
                     is CxxClassType -> CxxClassLValueRefType(convertedPointeeType, pointeeIsConst = pointeeIsConst)
                     else -> {
                         LValueRefType(
@@ -874,6 +928,13 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
             return
         }
 
+        if (library.language == Language.CPP) {
+            when (clang_getCXXAccessSpecifier(cursor)) {
+                CX_CXXAccessSpecifier.CX_CXXPrivate -> return
+                else -> {}
+            }
+        }
+
         when (kind) {
             CXIdxEntity_Struct, CXIdxEntity_Union, CXIdxEntity_CXXClass -> {
                 if (entityName == null) {
@@ -908,6 +969,14 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 }
             }
 
+            CXIdxEntity_CXXNamespace -> {
+                if (entityName == null) {
+                    // Skip anonymous namespace.
+                } else {
+                    getCxxNamespace(cursor, info)
+                }
+            }
+
             CXIdxEntity_Typedef -> {
                 val type = clang_getCursorType(cursor)
                 getTypedef(type)
@@ -931,6 +1000,26 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                     globalById.getOrPut(getDeclarationId(cursor)) {
                         GlobalDecl(
                                 name = entityName!!,
+                                type = convertCursorType(cursor),
+                                isConst = clang_isConstQualifiedType(clang_getCursorType(cursor)) != 0
+                        )
+                    }
+                }
+                else if (info.semanticContainer!!.pointed.cursor.kind == CXCursorKind.CXCursor_Namespace) {
+                    var parentCursor = info.semanticContainer!!.pointed.cursor.readValue()
+
+                    val namespace = generateSequence {
+                        if (parentCursor.kind == CXCursorKind.CXCursor_Namespace) {
+                            val name = getCursorSpelling(parentCursor)
+                            parentCursor = clang_getCursorSemanticParent(parentCursor)
+                            name
+                        } else
+                            null
+                    }.toList().asReversed().joinToString("::")
+
+                    globalById.getOrPut(getDeclarationId(cursor)) {
+                        GlobalDecl(
+                                name = "$namespace::${entityName!!}",
                                 type = convertCursorType(cursor),
                                 isConst = clang_isConstQualifiedType(clang_getCursorType(cursor)) != 0
                         )
@@ -996,7 +1085,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
-    private fun getFunction(cursor: CValue<CXCursor>): FunctionDecl {
+    private fun getFunction(cursor: CValue<CXCursor>): FunctionDeclImpl {
         val name = clang_getCursorSpelling(cursor).convertAndDispose()
         val returnType = convertType(clang_getCursorResultType(cursor), clang_getCursorResultTypeAttributes(cursor))
 
@@ -1010,10 +1099,10 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val isDefined = (clang_Cursor_isNull(definitionCursor) == 0)
         val isVararg = clang_Cursor_isVariadic(cursor) != 0
 
-        return FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg)
+        return FunctionDeclImpl(name, parameters, returnType, getLocation(cursor), binaryName, isDefined, isVararg)
     }
 
-    private fun getCxxClassFunction(cursor: CValue<CXCursor>, owner: CxxClassDecl): CxxClassFunctionDecl {
+    private fun getCxxClassFunction(cursor: CValue<CXCursor>, owner: CxxClassDecl): CxxClassFunctionDeclImpl {
         val name = clang_getCursorSpelling(cursor).convertAndDispose()
         val returnType = convertType(clang_getCursorResultType(cursor), clang_getCursorResultTypeAttributes(cursor))
 
@@ -1030,8 +1119,8 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val isVirtual = clang_CXXMethod_isVirtual(cursor) != 0
         val isPureVirtual = clang_CXXMethod_isPureVirtual(cursor) != 0
 
-        return CxxClassFunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg,
-                                    owner, isStatic, isVirtual, isPureVirtual)
+        return CxxClassFunctionDeclImpl(name, parameters, returnType, getLocation(cursor),
+                                        binaryName, isDefined, isVararg, owner, isStatic, isVirtual, isPureVirtual)
     }
 
     private fun getCxxClassConstructor(cursor: CValue<CXCursor>, owner: CxxClassDecl): CxxClassConstructorDecl {
@@ -1046,6 +1135,20 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val isVararg = clang_Cursor_isVariadic(cursor) != 0
 
         return CxxClassConstructorDecl(parameters, binaryName, isDefined, isVararg, owner)
+    }
+
+    private fun getCxxNamespace(cursor: CValue<CXCursor>, info: CXIdxDeclInfo): CxxNamespaceDeclImpl {
+        return cxxNamespacesRegistry.getOrPut(cursor) {
+            val parent = info.semanticContainer?.pointed?.cursor
+            assert(parent == null || parent.kind == CXCursorKind.CXCursor_Namespace || parent.kind == CXCursorKind.CXCursor_TranslationUnit)
+
+            val parentNamespace = if (parent?.kind == CXCursorKind.CXCursor_Namespace)
+                cxxNamespacesRegistry.getOrPut(parent.readValue()) { error("Outer namespace should be already processed") }
+            else
+                null
+
+            CxxNamespaceDeclImpl(getCursorSpelling(cursor), parentNamespace, getLocation(cursor))
+        }
     }
 
     private fun getObjCMethod(cursor: CValue<CXCursor>): ObjCMethod? {

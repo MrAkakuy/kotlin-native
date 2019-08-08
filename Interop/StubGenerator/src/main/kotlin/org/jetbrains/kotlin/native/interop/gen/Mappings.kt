@@ -22,6 +22,8 @@ interface DeclarationMapper {
     fun getKotlinClassForPointed(structDecl: StructDecl): Classifier
     fun isMappedToStrict(enumDef: EnumDef): Boolean
     fun getKotlinNameForValue(enumDef: EnumDef): String
+    fun getKotlinName(funcDecl: FunctionDecl): Classifier
+    fun getKotlinName(globalDecl: GlobalDecl): Classifier
     fun getPackageFor(declaration: TypeDeclaration): String
 
     val useUnsignedTypes: Boolean
@@ -104,7 +106,7 @@ sealed class TypeMirror(val pointedType: KotlinClassifierType, val info: TypeInf
             pointedType: KotlinClassifierType,
             info: TypeInfo,
             val valueType: KotlinType,
-            val nullable: Boolean = (info is TypeInfo.Pointer)
+            val nullable: Boolean = (info is TypeInfo.Pointer || info is TypeInfo.CxxClassPointer)
     ) : TypeMirror(pointedType, info) {
 
         override val argType: KotlinType
@@ -224,7 +226,7 @@ sealed class TypeInfo {
         override fun argToBridged(expr: String) = "$expr.rawValue"
 
         override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
-                error("Pointers to C++ class not implemented yet")
+                "${pointee.render(scope)}(interpretPointed<CStructVar>($expr))"
 
         override val bridgedType: BridgedType
             get() = BridgedType.NATIVE_PTR

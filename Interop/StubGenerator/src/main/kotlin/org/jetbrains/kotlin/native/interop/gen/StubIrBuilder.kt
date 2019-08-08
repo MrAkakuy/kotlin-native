@@ -7,6 +7,7 @@ package org.jetbrains.kotlin.native.interop.gen
 import org.jetbrains.kotlin.native.interop.gen.jvm.InteropConfiguration
 import org.jetbrains.kotlin.native.interop.gen.jvm.KotlinPlatform
 import org.jetbrains.kotlin.native.interop.indexer.*
+import org.jetbrains.kotlin.utils.addToStdlib.assertedCast
 
 /**
  * Additional components that are required to generate bridges.
@@ -89,6 +90,10 @@ interface StubsBuildingContext {
     fun getKotlinClassFor(objCClassOrProtocol: ObjCClassOrProtocol, isMeta: Boolean = false): Classifier
 
     fun getKotlinClassForPointed(structDecl: StructDecl): Classifier
+
+    fun getKotlinName(funcDecl: FunctionDecl): Classifier
+
+    fun getKotlinName(globalDecl: GlobalDecl): Classifier
 }
 
 /**
@@ -159,6 +164,21 @@ class StubsBuildingContextImpl(
 
         override fun getKotlinNameForValue(enumDef: EnumDef): String = enumDef.kotlinName
 
+        override fun getKotlinName(funcDecl: FunctionDecl): Classifier {
+            val baseName = funcDecl.kotlinName
+            val pkg = when (platform) {
+                KotlinPlatform.JVM -> pkgName
+                KotlinPlatform.NATIVE -> getPackageFor(funcDecl)
+            }
+            return Classifier.topLevel(pkg, baseName)
+        }
+
+        override fun getKotlinName(globalDecl: GlobalDecl): Classifier {
+            val baseName = globalDecl.kotlinName
+            val pkg = pkgName // TODO: is it ok or not
+            return Classifier.topLevel(pkg, baseName)
+        }
+
         override fun getPackageFor(declaration: TypeDeclaration): String {
             return imports.getPackage(declaration.location) ?: pkgName
         }
@@ -194,6 +214,12 @@ class StubsBuildingContextImpl(
     val StructDecl.kotlinName: String
         get() = stubIrContext.getKotlinName(this)
 
+    val FunctionDecl.kotlinName: String
+        get() = stubIrContext.getKotlinName(this)
+
+    val GlobalDecl.kotlinName: String
+        get() = stubIrContext.getKotlinName(this)
+
     override fun tryCreateIntegralStub(type: Type, value: Long): IntegralConstantStub? {
         val integerType = type.unwrapTypedefs() as? IntegerType ?: return null
         val size = integerType.size
@@ -216,6 +242,16 @@ class StubsBuildingContextImpl(
 
     override fun getKotlinClassForPointed(structDecl: StructDecl): Classifier {
         val classifier = declarationMapper.getKotlinClassForPointed(structDecl)
+        return classifier
+    }
+
+    override fun getKotlinName(funcDecl: FunctionDecl): Classifier {
+        val classifier = declarationMapper.getKotlinName(funcDecl)
+        return classifier
+    }
+
+    override fun getKotlinName(globalDecl: GlobalDecl): Classifier {
+        val classifier = declarationMapper.getKotlinName(globalDecl)
         return classifier
     }
 }
@@ -243,7 +279,12 @@ class StubIrBuilder(private val context: StubIrContext) {
     private fun addStubs(stubs: List<StubIrElement>) = stubs.forEach(this::addStub)
 
     private fun addStub(stub: StubIrElement) {
-        when(stub) {
+        if (stub is ClassStub.ContainerObject) {
+            val origin = stub.origin.assertedCast<StubOrigin.CxxNamespace> { "Namespace IR Stub has wrong origin" }
+            if (origin.namespace.parent == null)
+                classes += stub
+        }
+        else when(stub) {
             is ClassStub -> classes += stub
             is FunctionStub -> functions += stub
             is PropertyStub -> globals += stub

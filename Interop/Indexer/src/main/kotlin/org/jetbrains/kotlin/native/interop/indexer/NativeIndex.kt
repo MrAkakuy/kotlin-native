@@ -97,6 +97,7 @@ fun buildNativeIndex(library: NativeLibrary, verbose: Boolean): IndexerResult = 
 abstract class NativeIndex {
     abstract val structs: Collection<StructDecl>
     abstract val enums: Collection<EnumDef>
+    abstract val cxxNamespaces: Collection<CxxNamespaceDecl>
     abstract val cxxClasses: Collection<CxxClassDecl>
     abstract val objCClasses: Collection<ObjCClass>
     abstract val objCProtocols: Collection<ObjCProtocol>
@@ -192,11 +193,20 @@ abstract class CxxClassDecl(spelling: String, val isAbstract: Boolean = false) :
 /**
  * C++ class definition.
  */
-abstract class CxxClassDef(size: Long, align: Int, override val decl: CxxClassDecl) : StructDef(size, align, decl) {
+abstract class CxxClassDef(
+        size: Long, align: Int,
+        override val decl: CxxClassDecl,
+        val destructor: CxxClassFunctionDecl
+) : StructDef(size, align, decl) {
     abstract val constructors: List<CxxClassConstructorDecl>
     abstract val functions: List<CxxClassFunctionDecl>
     abstract val staticFunctions: List<CxxClassFunctionDecl>
 }
+
+/**
+ * C++ namespace declaration.
+ */
+abstract class CxxNamespaceDecl(val spelling: String, val parent: CxxNamespaceDecl?) : TypeDeclaration
 
 sealed class ObjCContainer {
     abstract val protocols: List<ObjCProtocol>
@@ -246,13 +256,13 @@ data class Parameter(val name: String?, val type: Type, val nsConsumed: Boolean)
 /**
  * C function declaration.
  */
-open class FunctionDecl(val name: String, val parameters: List<Parameter>, val returnType: Type, val binaryName: String,
-                        val isDefined: Boolean, val isVararg: Boolean)
+abstract class FunctionDecl(val name: String, val parameters: List<Parameter>, val returnType: Type, val binaryName: String,
+                            val isDefined: Boolean, val isVararg: Boolean) : TypeDeclaration
 
 /**
  * C++ class function declaration.
  */
-class CxxClassFunctionDecl(
+abstract class CxxClassFunctionDecl(
         name: String, parameters: List<Parameter>, returnType: Type, binaryName: String, isDefined: Boolean,
         isVararg: Boolean, val owner: CxxClassDecl, val isStatic: Boolean = false,
         val isVirtual: Boolean = false, val isPureVirtual: Boolean = false

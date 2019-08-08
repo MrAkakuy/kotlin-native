@@ -295,7 +295,7 @@ internal class CxxClassStubBuilder(
 ) : StubElementBuilder {
     override fun build(): List<StubIrElement> {
         val platform = context.platform
-        val def = decl.def ?: return generateForwardStruct(decl)
+        val def = decl.def ?: return generateForwardClass(decl)
 
         val structAnnotation: AnnotationStub? = if (platform == KotlinPlatform.JVM) {
             if (def.kind == StructDef.Kind.STRUCT && def.fieldsHaveDefaultAlignment()) {
@@ -348,6 +348,9 @@ internal class CxxClassStubBuilder(
                                 PropertyAccessor.Setter.MemberAt(offset, typeArguments = listOf(pointedTypeArgument))
                         )
                         PropertyStub(field.name, WrapperStubType(fieldRefType.argType), kind)
+                    } else if (unwrappedFieldType is CxxClassType) {
+                        val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.CxxClassMemberAt(offset, pointedType))
+                        PropertyStub(field.name, pointedType, kind)
                     } else {
                         val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.MemberAt(offset, hasValueAccessor = false))
                         PropertyStub(field.name, pointedType, kind)
@@ -399,10 +402,7 @@ internal class CxxClassStubBuilder(
                 name = "destructor",
                 returnType = WrapperStubType(KotlinTypes.unit),
                 parameters = emptyList(),
-                origin = StubOrigin.Function(CxxClassFunctionDecl(
-                        "~${classifier.topLevelName}", emptyList(), VoidType, "", true,
-                        isVararg = false, owner = decl, isStatic = false, isVirtual = true, isPureVirtual = false
-                )),
+                origin = StubOrigin.Function(def.destructor),
                 annotations = emptyList(),
                 receiver = null,
                 modality = MemberStubModality.OVERRIDE
@@ -422,8 +422,28 @@ internal class CxxClassStubBuilder(
                 )
             }
         }
+        val reinterpretCPointed = when (modality) {
+            ClassStubModality.ABSTRACT -> null
+            else -> {
+                FunctionStub(
+                        name = "reinterpret",
+                        returnType = ClassifierStubType(classifier),
+                        parameters = listOf(FunctionParameterStub("ptd", SymbolicStubType("NativePointed"))),
+                        origin = StubOrigin.None,
+                        annotations = emptyList(),
+                        receiver = null,
+                        modality = MemberStubModality.FINAL,
+                        kotlinFunctionAlias = "${classifier.topLevelName}(ptd.reinterpret<CStructVar>())"
+                )
+            }
+        }
 
-        val superClass = SymbolicStubType(if (decl.bases.isEmpty()) "CxxClass" else decl.bases.first().spelling) // TODO:
+        val superClass = SymbolicStubType(
+                if (decl.bases.isEmpty())
+                    "CxxClass"
+                else
+                    context.getKotlinClassForPointed(decl.bases.first()).topLevelName
+        )
 
         // TODO: How we will differ Type and CStructVar.Type?
         val companionSuper = SymbolicStubType("Type")
@@ -431,12 +451,12 @@ internal class CxxClassStubBuilder(
         val companionSuperInit = SuperClassInit(companionSuper, typeSize)
         val companion = ClassStub.Companion(
                 companionSuperInit,
-                functions = listOfNotNull(reinterpretCPointer) + staticFunctions
+                functions = listOfNotNull(reinterpretCPointer, reinterpretCPointed) + staticFunctions
         )
 
         return listOf(ClassStub.Simple(
                 classifier,
-                origin = StubOrigin.Struct(decl),
+                origin = StubOrigin.CxxClass(decl),
                 properties = fields.filterNotNull() + if (platform == KotlinPlatform.NATIVE) bitFields else emptyList(),
                 functions = (listOf(chainConstructor) + constructors) + (listOf(destructor) + functions),
                 modality = modality,
@@ -475,13 +495,13 @@ internal class CxxClassStubBuilder(
     /**
      * Produces to [out] the definition of Kotlin class representing the reference to given forward (incomplete) struct.
      */
-    private fun generateForwardStruct(s: StructDecl): List<StubIrElement> = when (context.platform) {
+    private fun generateForwardClass(c: CxxClassDecl): List<StubIrElement> = when (context.platform) {
         KotlinPlatform.JVM -> {
-            val classifier = context.getKotlinClassForPointed(s)
+            val classifier = context.getKotlinClassForPointed(c)
             val superClass = SymbolicStubType("COpaque")
             val rawPtrConstructorParam = ConstructorParameterStub("rawPtr", SymbolicStubType("NativePtr"))
             val superClassInit = SuperClassInit(superClass, listOf(GetConstructorParameter(rawPtrConstructorParam)))
-            val origin = StubOrigin.Struct(s)
+            val origin = StubOrigin.CxxClass(c)
             listOf(ClassStub.Simple(
                     classifier,
                     ClassStubModality.NONE,
@@ -571,7 +591,6 @@ internal abstract class FunctionalStubBuilder(
     private fun representCFunctionParameterAsValuesRef(type: Type): KotlinType? {
         val pointeeType = when (type) {
             is PointerType -> type.pointeeType
-            is CxxClassPointerType -> type.pointeeType
             is ArrayType -> type.elemType
             else -> return null
         }
@@ -597,7 +616,7 @@ internal abstract class FunctionalStubBuilder(
     }
 
 
-    private val platformWStringTypes = setOf("LPCWSTR")
+    private val platformWStringTypes = setOf("LPCWSTR", "std::__cxx11::basic_string<wchar_t>")
 
     private val noStringConversion: Set<String>
         get() = context.configuration.noStringConversion
@@ -638,9 +657,7 @@ internal class FunctionStubBuilder(
             when {
                 func.isPureVirtual -> MemberStubModality.ABSTRACT
                 func.isVirtual -> {
-                    val proto = func.owner.bases.getOrNull(0)?.def?.functions?.find {
-                        it.name == func.name && it.parameters == func.parameters && it.returnType == func.returnType && it.isVirtual
-                    }
+                    val proto = func.owner.bases.getOrNull(0)?.findFunctionProto(func)
                     if (proto != null) MemberStubModality.OVERRIDE else MemberStubModality.OPEN
                 }
                 else -> MemberStubModality.FINAL
@@ -648,7 +665,10 @@ internal class FunctionStubBuilder(
         } else MemberStubModality.FINAL
 
         val functionStub = FunctionStub(
-                func.name,
+                if (context.configuration.library.language == Language.CPP && func.name.contains('~'))
+                    "destructor"
+                else
+                    context.getKotlinName(func).topLevelName,
                 returnType,
                 parameters.toList(),
                 StubOrigin.Function(func),
@@ -661,6 +681,15 @@ internal class FunctionStubBuilder(
     }
 
     private fun FunctionDecl.returnsVoid(): Boolean = this.returnType.unwrapTypedefs() is VoidType
+
+    private fun CxxClassDecl.findFunctionProto(func: CxxClassFunctionDecl): CxxClassFunctionDecl? {
+        return def?.functions?.find {
+                it.name == func.name
+                        && it.parameters.map { it.type.unwrapTypedefs() } == func.parameters.map { it.type.unwrapTypedefs() }
+                        && it.returnType.unwrapTypedefs() == func.returnType.unwrapTypedefs()
+                        && (it.isVirtual || it.isPureVirtual)
+        } ?: bases.getOrNull(0)?.findFunctionProto(func)
+    }
 }
 
 internal class ConstructorStubBuilder(
@@ -688,6 +717,8 @@ internal class GlobalStubBuilder(
     override fun build(): List<StubIrElement> {
         val mirror = context.mirror(global.type)
         val unwrappedType = global.type.unwrapTypedefs()
+
+        val name = context.getKotlinName(global).topLevelName
 
         val kotlinType: KotlinType
         val kind: PropertyStub.Kind
@@ -733,7 +764,7 @@ internal class GlobalStubBuilder(
                 }
             }
         }
-        return listOf(PropertyStub(global.name, WrapperStubType(kotlinType), kind))
+        return listOf(PropertyStub(name, WrapperStubType(kotlinType), kind))
     }
 }
 

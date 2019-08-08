@@ -69,9 +69,28 @@ class StubIrContext(
             spelling
         }
 
+        val parts = strippedCName.split("::")
+        val name = parts.last()
+
         // TODO: don't mangle struct names because it wouldn't work if the struct
         //   is imported into another interop library.
-        return if (strippedCName !in forbiddenStructNames) strippedCName else (strippedCName + "Struct")
+        return if (name !in forbiddenStructNames) name else (name + "Struct")
+    }
+
+    fun getKotlinName(decl: FunctionDecl): String {
+        val spelling = decl.name
+        val parts = spelling.split("::")
+        val name = parts.last()
+
+        return name
+    }
+
+    fun getKotlinName(decl: GlobalDecl): String {
+        val spelling = decl.name
+        val parts = spelling.split("::")
+        val name = parts.last()
+
+        return name
     }
 
     fun addManifestProperties(properties: Properties) {

@@ -38,6 +38,7 @@ fun StubContainer.computeNamesToBeDeclared(pkgName: String): List<String> {
             is ClassStub.Simple -> it.classifier
             is ClassStub.Companion -> null
             is ClassStub.Enum -> it.classifier
+            is ClassStub.ContainerObject -> it.classifier
         }
     }.onEach { checkPackageCorrectness(it) }.map { it.topLevelName }
 
@@ -61,4 +62,5 @@ val StubContainer.defaultMemberModality: MemberStubModality
         }
         is ClassStub.Companion -> MemberStubModality.FINAL
         is ClassStub.Enum -> MemberStubModality.FINAL
+        is ClassStub.ContainerObject -> MemberStubModality.FINAL
     }

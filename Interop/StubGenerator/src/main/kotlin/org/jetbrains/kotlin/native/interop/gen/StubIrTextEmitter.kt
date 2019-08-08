@@ -333,10 +333,10 @@ class StubIrTextEmitter(
                         functionalBridgeBodies.getValue(element).forEach(out)
                     }
                 } else {
-                    sequenceOf(
-                            annotationForUnableToImport,
-                            "$header = throw UnsupportedOperationException()"
-                    ).forEach(out)
+                    out(annotationForUnableToImport)
+                    block(header) {
+                        out("throw UnsupportedOperationException()")
+                    }
                 }
             }
         }
@@ -448,16 +448,19 @@ class StubIrTextEmitter(
             is ClassStub.Simple -> renderClassStubModality(classStub.modality)
             is ClassStub.Companion -> ""
             is ClassStub.Enum -> "enum class "
+            is ClassStub.ContainerObject -> "object "
         }
         val className = when (classStub) {
             is ClassStub.Simple -> renderClassifierDeclaration(classStub.classifier)
             is ClassStub.Companion -> "companion object"
             is ClassStub.Enum -> renderClassifierDeclaration(classStub.classifier)
+            is ClassStub.ContainerObject -> renderClassifierDeclaration(classStub.classifier)
         }
         val constructorParams = when (classStub) {
             is ClassStub.Simple -> renderConstructorParams(classStub.constructorParameters)
             is ClassStub.Companion -> ""
             is ClassStub.Enum -> renderConstructorParams(classStub.constructorParameters)
+            is ClassStub.ContainerObject -> ""
         }
         val inheritance = mutableListOf<String>().apply {
             addIfNotNull(classStub.superClassInit?.let { renderSuperInit(it) })
@@ -604,6 +607,11 @@ class StubIrTextEmitter(
             val typeArguments = renderTypeArguments(accessor.typeArguments)
             val valueAccess = if (accessor.hasValueAccessor) ".value" else ""
             "memberAt$typeArguments(${accessor.offset})$valueAccess"
+        }
+
+        is PropertyAccessor.Getter.CxxClassMemberAt -> {
+            val typeParameter = renderStubType(accessor.typeParameter)
+            "$typeParameter(memberAt<CStructVar>(${accessor.offset}))"
         }
 
         is PropertyAccessor.Getter.ReadBits -> {
