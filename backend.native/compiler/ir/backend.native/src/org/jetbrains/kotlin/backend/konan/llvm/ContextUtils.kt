@@ -312,8 +312,7 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
         val result = LLVMAddFunction(llvmModule, name, type)!!
         attributes.forEach {
             val kindId = getLlvmAttributeKindId(it)
-            val attribute = LLVMCreateEnumAttribute(LLVMGetTypeContext(type), kindId, 0)!!
-            LLVMAddAttributeAtIndex(result, LLVMAttributeFunctionIndex, attribute)
+            addLlvmFunctionEnumAttribute(result, kindId)
         }
         return result
     }
@@ -428,11 +427,11 @@ internal class Llvm(val context: Context, val llvmModule: LLVMModuleRef) {
     val allocArrayFunction = importModelSpecificRtFunction("AllocArrayInstance")
     val initInstanceFunction = importModelSpecificRtFunction("InitInstance")
     val initSharedInstanceFunction = importModelSpecificRtFunction("InitSharedInstance")
-    val updateHeapRefFunction = importRtFunction("UpdateHeapRef")
-    val updateStackRefFunction = importRtFunction("UpdateStackRef")
-    val updateReturnRefFunction = importRtFunction("UpdateReturnRef")
-    val enterFrameFunction = importRtFunction("EnterFrame")
-    val leaveFrameFunction = importRtFunction("LeaveFrame")
+    val updateHeapRefFunction = importModelSpecificRtFunction("UpdateHeapRef")
+    val updateStackRefFunction = importModelSpecificRtFunction("UpdateStackRef")
+    val updateReturnRefFunction = importModelSpecificRtFunction("UpdateReturnRef")
+    val enterFrameFunction = importModelSpecificRtFunction("EnterFrame")
+    val leaveFrameFunction = importModelSpecificRtFunction("LeaveFrame")
     val lookupOpenMethodFunction = importRtFunction("LookupOpenMethod")
     val isInstanceFunction = importRtFunction("IsInstance")
     val checkInstanceFunction = importRtFunction("CheckInstance")

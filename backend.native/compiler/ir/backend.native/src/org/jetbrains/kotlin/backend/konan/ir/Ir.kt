@@ -37,11 +37,7 @@ import kotlin.properties.Delegates
 
 // This is what Context collects about IR.
 internal class KonanIr(context: Context, irModule: IrModuleFragment): Ir<Context>(context, irModule) {
-
-    val propertiesWithBackingFields = mutableSetOf<PropertyDescriptor>()
-
     override var symbols: KonanSymbols by Delegates.notNull()
-
 }
 
 internal class KonanSymbols(context: Context, private val symbolTable: SymbolTable, lazySymbolTable: ReferenceSymbolTable): Symbols<Context>(context, lazySymbolTable) {
@@ -330,8 +326,6 @@ internal class KonanSymbols(context: Context, private val symbolTable: SymbolTab
 
     override val returnIfSuspended = internalFunction("returnIfSuspended")
 
-
-
     val coroutineLaunchpad = internalFunction("coroutineLaunchpad")
 
     val konanSuspendCoroutineUninterceptedOrReturn = internalFunction("suspendCoroutineUninterceptedOrReturn")
@@ -391,6 +385,7 @@ internal class KonanSymbols(context: Context, private val symbolTable: SymbolTab
     val refClass = symbolTable.referenceClass(context.getKonanInternalClass("Ref"))
 
     val kFunctionImpl =  symbolTable.referenceClass(context.reflectionTypes.kFunctionImpl)
+    val kSuspendFunctionImpl =  symbolTable.referenceClass(context.reflectionTypes.kSuspendFunctionImpl)
 
     val kMutableProperty0 = symbolTable.referenceClass(context.reflectionTypes.kMutableProperty0)
     val kMutableProperty1 = symbolTable.referenceClass(context.reflectionTypes.kMutableProperty1)
@@ -451,13 +446,13 @@ internal class KonanSymbols(context: Context, private val symbolTable: SymbolTab
     )
     val listOfInternal = internalFunction("listOfInternal")
 
-    val threadLocal =
+    val threadLocal = symbolTable.referenceClass(
             context.builtIns.builtInsModule.findClassAcrossModuleDependencies(
-                    ClassId.topLevel(FqName("kotlin.native.concurrent.ThreadLocal")))!!
+                    ClassId.topLevel(KonanFqNames.threadLocal))!!)
 
-    val sharedImmutable =
+    val sharedImmutable = symbolTable.referenceClass(
             context.builtIns.builtInsModule.findClassAcrossModuleDependencies(
-                    ClassId.topLevel(FqName("kotlin.native.concurrent.SharedImmutable")))!!
+                    ClassId.topLevel(KonanFqNames.sharedImmutable))!!)
 
     private fun topLevelClass(fqName: String): IrClassSymbol = topLevelClass(FqName(fqName))
     private fun topLevelClass(fqName: FqName): IrClassSymbol = classById(ClassId.topLevel(fqName))
@@ -491,6 +486,10 @@ internal class KonanSymbols(context: Context, private val symbolTable: SymbolTab
 
     val kFunctions = (0 .. KONAN_FUNCTION_INTERFACES_MAX_PARAMETERS)
             .map { symbolTable.referenceClass(context.reflectionTypes.getKFunction(it)) }
+
+    // Since KSuspendFunctionN inherits Function{N+1} and we only have 0..22 range, skip the last one for now.
+    val kSuspendFunctions = (0 .. KONAN_FUNCTION_INTERFACES_MAX_PARAMETERS - 1)
+            .map { symbolTable.referenceClass(context.reflectionTypes.getKSuspendFunction(it)) }
 
     fun getKFunctionType(returnType: IrType, parameterTypes: List<IrType>): IrType {
         val kFunctionClassSymbol = kFunctions[parameterTypes.size]

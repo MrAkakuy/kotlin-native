@@ -1,6 +1,6 @@
 package org.jetbrains.kotlin.backend.konan
 
-import org.jetbrains.kotlin.backend.common.LoggingContext
+import org.jetbrains.kotlin.backend.common.*
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.backend.common.phaser.*
 import org.jetbrains.kotlin.backend.common.serialization.DescriptorTable
@@ -20,11 +20,48 @@ import org.jetbrains.kotlin.config.languageVersionSettings
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
 import org.jetbrains.kotlin.ir.util.SymbolTable
-import org.jetbrains.kotlin.ir.util.patchDeclarationParents
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.psi2ir.Psi2IrConfiguration
 import org.jetbrains.kotlin.psi2ir.Psi2IrTranslator
 import java.util.Collections.emptySet
+
+internal fun moduleValidationCallback(state: ActionState, module: IrModuleFragment, context: Context) {
+    if (!context.config.needCompilerVerification) return
+
+    val validatorConfig = IrValidatorConfig(
+        abortOnError = false,
+        ensureAllNodesAreDifferent = true,
+        checkTypes = true,
+        checkDescriptors = false
+    )
+    try {
+        module.accept(IrValidator(context, validatorConfig), null)
+        module.accept(CheckDeclarationParentsVisitor, null)
+    } catch (t: Throwable) {
+        // TODO: Add reference to source.
+        if (validatorConfig.abortOnError)
+            throw IllegalStateException("Failed IR validation ${state.beforeOrAfter} ${state.phase}", t)
+        else context.reportCompilationWarning("[IR VALIDATION] ${state.beforeOrAfter} ${state.phase}: ${t.message}")
+    }
+}
+
+internal fun fileValidationCallback(state: ActionState, irFile: IrFile, context: Context) {
+    val validatorConfig = IrValidatorConfig(
+        abortOnError = false,
+        ensureAllNodesAreDifferent = true,
+        checkTypes = true,
+        checkDescriptors = false
+    )
+    try {
+        irFile.accept(IrValidator(context, validatorConfig), null)
+        irFile.accept(CheckDeclarationParentsVisitor, null)
+    } catch (t: Throwable) {
+        // TODO: Add reference to source.
+        if (validatorConfig.abortOnError)
+            throw IllegalStateException("Failed IR validation ${state.beforeOrAfter} ${state.phase}", t)
+        else context.reportCompilationWarning("[IR VALIDATION] ${state.beforeOrAfter} ${state.phase}: ${t.message}")
+    }
+}
 
 internal fun konanUnitPhase(
         name: String,
@@ -128,8 +165,6 @@ internal val psiToIrPhase = konanUnitPhase(
             irModule = module
             irModules = deserializer.modules
             ir.symbols = symbols
-
-//        validateIrModule(this, module)
         },
         name = "Psi2Ir",
         description = "Psi to IR conversion",
@@ -169,12 +204,6 @@ internal val copyDefaultValuesToActualPhase = konanUnitPhase(
         description = "Copy default values from expect to actual declarations"
 )
 
-internal val patchDeclarationParents0Phase = konanUnitPhase(
-        op = { irModule!!.patchDeclarationParents() }, // why do we need it?
-        name = "PatchDeclarationParents0",
-        description = "Patch declaration parents"
-)
-
 internal val serializerPhase = konanUnitPhase(
         op = {
             val declarationTable = KonanDeclarationTable(irModule!!.irBuiltins, DescriptorTable())
@@ -210,10 +239,10 @@ internal val allLoweringsPhase = namedIrModulePhase(
         description = "IR Lowering",
         lower = removeExpectDeclarationsPhase then
                 lowerBeforeInlinePhase then
+                provisionalFunctionExpressionPhase then
                 inlinePhase then
                 lowerAfterInlinePhase then
                 interopPart1Phase then
-                patchDeclarationParents1Phase then
                 performByIrFile(
                         name = "IrLowerByFile",
                         description = "IR Lowering by file",
@@ -242,9 +271,8 @@ internal val allLoweringsPhase = namedIrModulePhase(
                                 bridgesPhase then
                                 autoboxPhase then
                                 returnsInsertionPhase
-                ) then
-                checkDeclarationParentsPhase
-//                                                validateIrModulePhase // Temporarily disabled until moving to new IR finished.
+                ),
+        actions = setOf(defaultDumper, ::moduleValidationCallback)
 )
 
 internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
@@ -313,7 +341,6 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                 destroySymbolTablePhase then
                 irGeneratorPluginsPhase then
                 copyDefaultValuesToActualPhase then
-                patchDeclarationParents0Phase then
                 serializerPhase then
                 namedUnitPhase(
                         name = "Backend",
@@ -331,6 +358,14 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                 linkPhase
 )
 
+internal fun PhaseConfig.disableIf(phase: AnyNamedPhase, condition: Boolean) {
+    if (condition) disable(phase)
+}
+
+internal fun PhaseConfig.disableUnless(phase: AnyNamedPhase, condition: Boolean) {
+    if (!condition) disable(phase)
+}
+
 internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
     with(config.configuration) {
         disable(compileTimeEvaluatePhase)
@@ -339,13 +374,14 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         disable(serializeDFGPhase)
 
         // Don't serialize anything to a final executable.
-        switch(serializerPhase, config.produce == CompilerOutputKind.LIBRARY)
-        switch(dependenciesLowerPhase, config.produce != CompilerOutputKind.LIBRARY)
-        switch(bitcodePhase, config.produce != CompilerOutputKind.LIBRARY)
-        switch(linkPhase, config.produce.isNativeBinary)
-        switch(testProcessorPhase, getNotNull(KonanConfigKeys.GENERATE_TEST_RUNNER) != TestRunnerKind.NONE)
-        switch(buildDFGPhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
-        switch(devirtualizationPhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
-        switch(dcePhase, config.configuration.getBoolean(KonanConfigKeys.OPTIMIZATION))
+        disableUnless(serializerPhase, config.produce == CompilerOutputKind.LIBRARY)
+        disableIf(dependenciesLowerPhase, config.produce == CompilerOutputKind.LIBRARY)
+        disableIf(bitcodePhase, config.produce == CompilerOutputKind.LIBRARY)
+        disableUnless(linkPhase, config.produce.isNativeBinary)
+        disableIf(testProcessorPhase, getNotNull(KonanConfigKeys.GENERATE_TEST_RUNNER) == TestRunnerKind.NONE)
+        disableUnless(buildDFGPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
+        disableUnless(devirtualizationPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
+        disableUnless(dcePhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
+        disableUnless(verifyBitcodePhase, config.needCompilerVerification || getBoolean(KonanConfigKeys.VERIFY_BITCODE))
     }
 }

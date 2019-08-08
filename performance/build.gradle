@@ -138,9 +138,9 @@ task teamCityStat(type:Exec) {
     }
 }
 
-task сinterop {
+task cinterop {
     dependsOn 'clean'
-    dependsOn 'сinterop:konanRun'
+    dependsOn 'cinterop:konanRun'
 }
 
 task framework {
@@ -170,5 +170,5 @@ task swiftinterop {
 
 task videoplayer {
     dependsOn 'clean'
-    dependsOn 'swiftinterop:konanRun'
+    dependsOn 'videoplayer:konanRun'
 }

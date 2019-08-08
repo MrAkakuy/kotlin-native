@@ -31,13 +31,14 @@ internal class ObjCExportMapper(
         val maxFunctionTypeParameterCount get() = KONAN_FUNCTION_INTERFACES_MAX_PARAMETERS
     }
 
-    val customTypeMappers: Map<ClassId, CustomTypeMapper> get() = CustomTypeMappers.byClassId
+    fun getCustomTypeMapper(descriptor: ClassDescriptor): CustomTypeMapper? = CustomTypeMappers.getMapper(descriptor)
+
     val hiddenTypes: Set<ClassId> get() = CustomTypeMappers.hiddenTypes
 
     fun isSpecialMapped(descriptor: ClassDescriptor): Boolean {
         // TODO: this method duplicates some of the [ObjCExportTranslatorImpl.mapReferenceType] logic.
         return KotlinBuiltIns.isAny(descriptor) ||
-                descriptor.getAllSuperClassifiers().any { it.classId in customTypeMappers }
+                descriptor.getAllSuperClassifiers().any { it is ClassDescriptor && CustomTypeMappers.hasMapper(it) }
     }
 
     private val methodBridgeCache = mutableMapOf<FunctionDescriptor, MethodBridge>()
@@ -118,15 +119,26 @@ internal fun ObjCExportMapper.getDeprecation(descriptor: DeclarationDescriptor):
     return null
 }
 
-private tailrec fun ObjCExportMapper.isHiddenByDeprecation(descriptor: ClassDescriptor): Boolean {
+private fun ObjCExportMapper.isHiddenByDeprecation(descriptor: ClassDescriptor): Boolean {
     if (deprecationResolver == null) return false
     if (deprecationResolver.isDeprecatedHidden(descriptor)) return true
 
-    val superClass = descriptor.getSuperClassNotAny() ?: return false
-
     // Note: ObjCExport requires super class of exposed class to be exposed.
     // So hide a class if its super class is hidden:
-    return isHiddenByDeprecation(superClass)
+    val superClass = descriptor.getSuperClassNotAny()
+    if (superClass != null && isHiddenByDeprecation(superClass)) {
+        return true
+    }
+
+    // Note: ObjCExport requires enclosing class of exposed class to be exposed.
+    // Also in Kotlin hidden class members (including other classes) aren't directly accessible.
+    // So hide a class if its enclosing class is hidden:
+    val containingDeclaration = descriptor.containingDeclaration
+    if (containingDeclaration is ClassDescriptor && isHiddenByDeprecation(containingDeclaration)) {
+        return true
+    }
+
+    return false
 }
 
 // Note: the logic is partially duplicated in ObjCExportLazyImpl.translateClasses.

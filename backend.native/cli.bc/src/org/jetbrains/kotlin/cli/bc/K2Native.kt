@@ -150,6 +150,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(LIST_TARGETS, arguments.listTargets)
                 put(OPTIMIZATION, arguments.optimization)
                 put(DEBUG, arguments.debug)
+                put(LIGHT_DEBUG, arguments.lightDebug)
                 put(STATIC_FRAMEWORK, selectFrameworkType(configuration, arguments, outputKind))
 
                 put(PRINT_IR, arguments.printIr)
@@ -160,16 +161,14 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
 
                 put(PURGE_USER_LIBS, arguments.purgeUserLibs)
 
-                put(VERIFY_IR, arguments.verifyIr)
-                put(VERIFY_DESCRIPTORS, arguments.verifyDescriptors)
+                if (arguments.verifyCompiler != null)
+                    put(VERIFY_COMPILER, arguments.verifyCompiler == "true")
                 put(VERIFY_BITCODE, arguments.verifyBitCode)
 
                 put(ENABLED_PHASES,
                         arguments.enablePhases.toNonNullList())
                 put(DISABLED_PHASES,
                         arguments.disablePhases.toNonNullList())
-                put(VERBOSE_PHASES,
-                        arguments.verbosePhases.toNonNullList())
                 put(LIST_PHASES, arguments.listPhases)
 
                 put(COMPATIBLE_COMPILER_VERSIONS,
@@ -179,13 +178,13 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
 
                 put(MEMORY_MODEL, when (arguments.memoryModel) {
                     "relaxed" -> {
-                        configuration.report(STRONG_WARNING, "Relaxed memory model is not yet functional")
+                        configuration.report(STRONG_WARNING, "Relaxed memory model is not yet fully functional")
                         MemoryModel.RELAXED
                     }
                     "strict" -> MemoryModel.STRICT
                     else -> {
                         configuration.report(ERROR, "Unsupported memory model ${arguments.memoryModel}")
-                        return
+                        MemoryModel.STRICT
                     }
                 })
 
