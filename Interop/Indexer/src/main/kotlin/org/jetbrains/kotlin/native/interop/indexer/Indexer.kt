@@ -354,7 +354,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val bases = cxxDeclInfo.bases ?: return emptyList()
 
         // TODO:
-        return bases.convertAndDispose(cxxDeclInfo.numBases).mapNotNull {
+        return bases.convert(cxxDeclInfo.numBases).mapNotNull {
             val baseType = clang_getCursorType(it.cursor.readValue())
             val baseSpelling = clang_getTypeSpelling(baseType).convertAndDispose()
             cxxClassesRegistry.included.find { it.spelling == baseSpelling }

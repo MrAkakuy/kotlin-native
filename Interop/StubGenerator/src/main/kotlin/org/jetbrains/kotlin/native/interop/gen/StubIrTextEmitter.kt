@@ -448,19 +448,16 @@ class StubIrTextEmitter(
             is ClassStub.Simple -> renderClassStubModality(classStub.modality)
             is ClassStub.Companion -> ""
             is ClassStub.Enum -> "enum class "
-            is ClassStub.ContainerObject -> "object "
         }
         val className = when (classStub) {
             is ClassStub.Simple -> renderClassifierDeclaration(classStub.classifier)
             is ClassStub.Companion -> "companion object"
             is ClassStub.Enum -> renderClassifierDeclaration(classStub.classifier)
-            is ClassStub.ContainerObject -> renderClassifierDeclaration(classStub.classifier)
         }
         val constructorParams = when (classStub) {
             is ClassStub.Simple -> renderConstructorParams(classStub.constructorParameters)
             is ClassStub.Companion -> ""
             is ClassStub.Enum -> renderConstructorParams(classStub.constructorParameters)
-            is ClassStub.ContainerObject -> ""
         }
         val inheritance = mutableListOf<String>().apply {
             addIfNotNull(classStub.superClassInit?.let { renderSuperInit(it) })

@@ -288,19 +288,6 @@ sealed class ClassStub : StubContainer(), StubElementWithOrigin, AnnotationHolde
             override val simpleContainers: List<SimpleStubContainer> = emptyList()
     ) : ClassStub()
 
-    class ContainerObject(
-            val classifier: Classifier,
-            override val superClassInit: SuperClassInit? = null,
-            override val interfaces: MutableList<StubType> = mutableListOf(),
-            override val properties: MutableList<PropertyStub> = mutableListOf(),
-            override val origin: StubOrigin = StubOrigin.None,
-            override val annotations: List<AnnotationStub> = mutableListOf(),
-            override val childrenClasses: MutableList<ClassStub> = mutableListOf(),
-            override val companion: Companion? = null,
-            override val functions: MutableList<FunctionalStub> = mutableListOf(),
-            override val simpleContainers: MutableList<SimpleStubContainer> = mutableListOf()
-    ) : ClassStub()
-
     override val meta: StubContainerMeta = StubContainerMeta()
 
     override val classes: List<ClassStub>

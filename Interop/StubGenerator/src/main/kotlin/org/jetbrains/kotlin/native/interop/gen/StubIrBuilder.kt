@@ -7,7 +7,6 @@ package org.jetbrains.kotlin.native.interop.gen
 import org.jetbrains.kotlin.native.interop.gen.jvm.InteropConfiguration
 import org.jetbrains.kotlin.native.interop.gen.jvm.KotlinPlatform
 import org.jetbrains.kotlin.native.interop.indexer.*
-import org.jetbrains.kotlin.utils.addToStdlib.assertedCast
 
 /**
  * Additional components that are required to generate bridges.
@@ -279,12 +278,7 @@ class StubIrBuilder(private val context: StubIrContext) {
     private fun addStubs(stubs: List<StubIrElement>) = stubs.forEach(this::addStub)
 
     private fun addStub(stub: StubIrElement) {
-        if (stub is ClassStub.ContainerObject) {
-            val origin = stub.origin.assertedCast<StubOrigin.CxxNamespace> { "Namespace IR Stub has wrong origin" }
-            if (origin.namespace.parent == null)
-                classes += stub
-        }
-        else when(stub) {
+        when(stub) {
             is ClassStub -> classes += stub
             is FunctionStub -> functions += stub
             is PropertyStub -> globals += stub
