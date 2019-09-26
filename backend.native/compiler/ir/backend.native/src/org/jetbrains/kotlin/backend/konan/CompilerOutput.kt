@@ -4,9 +4,7 @@
  */
 package org.jetbrains.kotlin.backend.konan
 
-import llvm.LLVMLinkModules2
-import llvm.LLVMModuleRef
-import llvm.LLVMWriteBitcodeToFile
+import llvm.*
 import org.jetbrains.kotlin.backend.konan.library.impl.buildLibrary
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.llvm.Llvm
@@ -18,11 +16,29 @@ import org.jetbrains.kotlin.library.*
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.konan.target.Family
 
-val CompilerOutputKind.isNativeBinary: Boolean get() = when (this) {
+/**
+ * Supposed to be true for a single LLVM module within final binary.
+ */
+val CompilerOutputKind.isFinalBinary: Boolean get() = when (this) {
     CompilerOutputKind.PROGRAM, CompilerOutputKind.DYNAMIC,
     CompilerOutputKind.STATIC, CompilerOutputKind.FRAMEWORK -> true
+    CompilerOutputKind.DYNAMIC_CACHE, CompilerOutputKind.STATIC_CACHE,
     CompilerOutputKind.LIBRARY, CompilerOutputKind.BITCODE -> false
 }
+
+val CompilerOutputKind.involvesBitcodeGeneration: Boolean
+    get() = this != CompilerOutputKind.LIBRARY
+
+internal val Context.producedLlvmModuleContainsStdlib: Boolean
+    get() = this.llvmModuleSpecification.containsModule(this.stdlibModule)
+
+val CompilerOutputKind.involvesLinkStage: Boolean
+    get() = when (this) {
+        CompilerOutputKind.PROGRAM, CompilerOutputKind.DYNAMIC,
+        CompilerOutputKind.DYNAMIC_CACHE, CompilerOutputKind.STATIC_CACHE,
+        CompilerOutputKind.STATIC, CompilerOutputKind.FRAMEWORK -> true
+        CompilerOutputKind.LIBRARY, CompilerOutputKind.BITCODE -> false
+    }
 
 internal fun produceCStubs(context: Context) {
     val llvmModule = context.llvmModule!!
@@ -31,9 +47,12 @@ internal fun produceCStubs(context: Context) {
     }
 }
 
-private fun linkAllDependecies(context: Context, generatedBitcodeFiles: List<String>) {
-
-    val nativeLibraries = context.config.nativeLibraries + context.config.defaultNativeLibraries
+private fun linkAllDependencies(context: Context, generatedBitcodeFiles: List<String>) {
+    val runtimeNativeLibraries = context.config.runtimeNativeLibraries
+            .takeIf { context.producedLlvmModuleContainsStdlib }.orEmpty()
+    val launcherNativeLibraries = context.config.launcherNativeLibraries
+            .takeIf { context.config.produce == CompilerOutputKind.PROGRAM }.orEmpty()
+    val nativeLibraries = context.config.nativeLibraries + runtimeNativeLibraries + launcherNativeLibraries
     val bitcodeLibraries = context.llvm.bitcodeToLink.map { it.bitcodePaths }.flatten().filter { it.isBitcode }
     val additionalBitcodeFilesToLink = context.llvm.additionalProducedBitcodeFiles
     val bitcodeFiles = (nativeLibraries + generatedBitcodeFiles + additionalBitcodeFilesToLink + bitcodeLibraries).toSet()
@@ -55,6 +74,16 @@ private fun runLlvmPipeline(context: Context) = when {
     shouldOptimizeWithLlvmApi(context) -> runLlvmOptimizationPipeline(context)
     shoudRunClosedWorldCleanUp(context) -> runClosedWorldCleanup(context)
     else -> {}
+}
+
+private fun insertAliasToEntryPoint(context: Context) {
+    val nomain = context.config.configuration.get(KonanConfigKeys.NOMAIN) ?: false
+    if (context.config.produce != CompilerOutputKind.PROGRAM || nomain)
+        return
+    val module = context.llvmModule
+    val entryPoint = LLVMGetNamedFunction(module, "Konan_main")
+            ?: error("Module doesn't contain `Konan_main`")
+    LLVMAddAlias(module, LLVMTypeOf(entryPoint)!!, entryPoint, "main")
 }
 
 internal fun produceOutput(context: Context) {
@@ -81,8 +110,11 @@ internal fun produceOutput(context: Context) {
             if (produce == CompilerOutputKind.FRAMEWORK && context.config.produceStaticFramework) {
                 embedAppleLinkerOptionsToBitcode(context.llvm, context.config)
             }
-            linkAllDependecies(context, generatedBitcodeFiles)
+            linkAllDependencies(context, generatedBitcodeFiles)
             runLlvmPipeline(context)
+            // Insert `_main` after pipeline so we won't worry about optimizations
+            // corrupting entry point.
+            insertAliasToEntryPoint(context)
             LLVMWriteBitcodeToFile(context.llvmModule!!, output)
         }
         CompilerOutputKind.LIBRARY -> {

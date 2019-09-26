@@ -10,19 +10,27 @@ import org.jetbrains.kotlin.backend.konan.ir.KonanSymbols
 import org.jetbrains.kotlin.backend.konan.llvm.*
 import org.jetbrains.kotlin.backend.konan.lower.ExpectToActualDefaultValueCopier
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
-import org.jetbrains.kotlin.backend.konan.serialization.KonanDeclarationTable
-import org.jetbrains.kotlin.backend.konan.serialization.KonanIrLinker
-import org.jetbrains.kotlin.backend.konan.serialization.KonanIrModuleSerializer
-import org.jetbrains.kotlin.backend.konan.serialization.KonanSerializationUtil
+import org.jetbrains.kotlin.backend.konan.serialization.*
 import org.jetbrains.kotlin.cli.common.messages.AnalyzerWithCompilerReport
 import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.languageVersionSettings
+import org.jetbrains.kotlin.descriptors.ModuleDescriptor
+import org.jetbrains.kotlin.descriptors.konan.isKonanStdlib
+import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.declarations.IrFile
 import org.jetbrains.kotlin.ir.declarations.IrModuleFragment
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.util.SymbolTable
+import org.jetbrains.kotlin.ir.visitors.IrElementVisitorVoid
+import org.jetbrains.kotlin.ir.visitors.acceptChildrenVoid
+import org.jetbrains.kotlin.ir.visitors.acceptVoid
+import org.jetbrains.kotlin.ir.util.addChild
+import org.jetbrains.kotlin.ir.util.file
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
+import org.jetbrains.kotlin.library.KotlinLibrary
 import org.jetbrains.kotlin.psi2ir.Psi2IrConfiguration
 import org.jetbrains.kotlin.psi2ir.Psi2IrTranslator
+import org.jetbrains.kotlin.utils.DFS
 import java.util.Collections.emptySet
 
 internal fun moduleValidationCallback(state: ActionState, module: IrModuleFragment, context: Context) {
@@ -152,19 +160,33 @@ internal val psiToIrPhase = konanUnitPhase(
                 val dependencies = moduleDescriptor.allDependencyModules.filter {
                     config.librariesWithDependencies(moduleDescriptor).contains(it.konanLibrary)
                 }
-                for (dependency in dependencies) {
+
+                fun sortDependencies(dependencies: List<ModuleDescriptor>): Collection<ModuleDescriptor> {
+                    return DFS.topologicalOrder(dependencies) {
+                        it.allDependencyModules
+                    }.reversed()
+                }
+
+                for (dependency in sortDependencies(dependencies)) {
                     deserializer.deserializeIrModuleHeader(dependency)
                 }
                 if (dependencies.size == dependenciesCount) break
                 dependenciesCount = dependencies.size
             }
 
-            val symbols = KonanSymbols(this, symbolTable, symbolTable.lazyWrapper)
-            val module = translator.generateModuleFragment(generatorContext, environment.getSourceFiles(), deserializer)
+            val functionIrClassFactory = BuiltInFictitiousFunctionIrClassFactory(
+                    symbolTable, generatorContext.irBuiltIns, reflectionTypes)
+            val symbols = KonanSymbols(this, symbolTable, symbolTable.lazyWrapper, functionIrClassFactory)
+            val module = translator.generateModuleFragment(generatorContext, environment.getSourceFiles(),
+                    deserializer, listOf(functionIrClassFactory))
 
             irModule = module
             irModules = deserializer.modules
             ir.symbols = symbols
+
+            functionIrClassFactory.module =
+                    (listOf(irModule!!) + irModules.values)
+                            .single { it.descriptor.isKonanStdlib() }
         },
         name = "Psi2Ir",
         description = "Psi to IR conversion",
@@ -174,6 +196,7 @@ internal val psiToIrPhase = konanUnitPhase(
 internal val destroySymbolTablePhase = konanUnitPhase(
         op = {
             this.symbolTable = null // TODO: invalidate symbolTable itself.
+            ir.symbols.functionIrClassFactory.symbolTable = null
         },
         name = "DestroySymbolTable",
         description = "Destroy SymbolTable",
@@ -206,9 +229,10 @@ internal val copyDefaultValuesToActualPhase = konanUnitPhase(
 
 internal val serializerPhase = konanUnitPhase(
         op = {
-            val declarationTable = KonanDeclarationTable(irModule!!.irBuiltins, DescriptorTable())
-            serializedIr = KonanIrModuleSerializer(this, declarationTable).serializedIrModule(irModule!!)
-            val serializer = KonanSerializationUtil(this, config.configuration.get(CommonConfigurationKeys.METADATA_VERSION)!!, declarationTable)
+            val descriptorTable = DescriptorTable()
+//            val declarationTable = KonanDeclarationTable(irModule!!.irBuiltins)
+            serializedIr = KonanIrModuleSerializer(this, irModule!!.irBuiltins, descriptorTable).serializedIrModule(irModule!!)
+            val serializer = KonanSerializationUtil(this, config.configuration.get(CommonConfigurationKeys.METADATA_VERSION)!!, descriptorTable)
             serializedMetadata = serializer.serializeModule(moduleDescriptor)
         },
         name = "Serializer",
@@ -238,9 +262,11 @@ internal val allLoweringsPhase = namedIrModulePhase(
         name = "IrLowering",
         description = "IR Lowering",
         lower = removeExpectDeclarationsPhase then
+                stripTypeAliasDeclarationsPhase then
                 lowerBeforeInlinePhase then
-                provisionalFunctionExpressionPhase then
+                arrayConstructorPhase then
                 inlinePhase then
+                provisionalFunctionExpressionPhase then
                 lowerAfterInlinePhase then
                 interopPart1Phase then
                 performByIrFile(
@@ -312,6 +338,20 @@ internal val dependenciesLowerPhase = SameTypeNamedPhaseWrapper(
             }
         })
 
+internal val entryPointPhase = SameTypeNamedPhaseWrapper(
+        name = "addEntryPoint",
+        description = "Add entry point for program",
+        prerequisite = emptySet(),
+        lower = object : CompilerPhase<Context, IrModuleFragment, IrModuleFragment> {
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<IrModuleFragment>,
+                                context: Context, input: IrModuleFragment): IrModuleFragment {
+                assert(context.config.produce == CompilerOutputKind.PROGRAM)
+                context.ir.symbols.entryPoint!!.owner.file.addChild(makeEntryPoint(context))
+                return input
+            }
+        }
+)
+
 internal val bitcodePhase = namedIrModulePhase(
         name = "Bitcode",
         description = "LLVM Bitcode generation",
@@ -321,6 +361,7 @@ internal val bitcodePhase = namedIrModulePhase(
                 devirtualizationPhase then
                 dcePhase then
                 contextLLVMSetupPhase then
+                ghaPhase then
                 RTTIPhase then
                 generateDebugInfoHeaderPhase then
                 escapeAnalysisPhase then
@@ -349,6 +390,7 @@ val toplevelPhase: CompilerPhase<*, Unit, Unit> = namedUnitPhase(
                                 allLoweringsPhase then // Lower current module first.
                                 dependenciesLowerPhase then // Then lower all libraries in topological order.
                                                             // With that we guarantee that inline functions are unlowered while being inlined.
+                                entryPointPhase then
                                 bitcodePhase then
                                 verifyBitcodePhase then
                                 printBitcodePhase then
@@ -376,12 +418,14 @@ internal fun PhaseConfig.konanPhasesConfig(config: KonanConfig) {
         // Don't serialize anything to a final executable.
         disableUnless(serializerPhase, config.produce == CompilerOutputKind.LIBRARY)
         disableIf(dependenciesLowerPhase, config.produce == CompilerOutputKind.LIBRARY)
+        disableUnless(entryPointPhase, config.produce == CompilerOutputKind.PROGRAM)
         disableIf(bitcodePhase, config.produce == CompilerOutputKind.LIBRARY)
-        disableUnless(linkPhase, config.produce.isNativeBinary)
+        disableUnless(linkPhase, config.produce.involvesLinkStage)
         disableIf(testProcessorPhase, getNotNull(KonanConfigKeys.GENERATE_TEST_RUNNER) == TestRunnerKind.NONE)
         disableUnless(buildDFGPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(devirtualizationPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(dcePhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
+        disableUnless(ghaPhase, getBoolean(KonanConfigKeys.OPTIMIZATION))
         disableUnless(verifyBitcodePhase, config.needCompilerVerification || getBoolean(KonanConfigKeys.VERIFY_BITCODE))
     }
 }

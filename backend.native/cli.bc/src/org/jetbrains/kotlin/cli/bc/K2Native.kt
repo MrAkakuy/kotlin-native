@@ -70,11 +70,6 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
             configuration.put(CommonConfigurationKeys.METADATA_VERSION, KonanMetadataVersion.INSTANCE)
         }
 
-        if (konanConfig.linkOnly) {
-            configuration.report(WARNING, "You have not specified any source files. " +
-                    "Only libraries will be used to produce the output binary.")
-        }
-
         try {
             runTopLevelPhases(konanConfig, environment)
         } catch (e: KonanCompilationException) {
@@ -95,7 +90,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
     }
 
     val K2NativeCompilerArguments.isUsefulWithoutFreeArgs: Boolean
-        get() = this.listTargets || this.listPhases || this.checkDependencies || this.libraries?.isNotEmpty() ?: false
+        get() = listTargets || listPhases || checkDependencies || !includes.isNullOrEmpty()
 
     fun Array<String>?.toNonNullList(): List<String> {
         return this?.asList<String>() ?: listOf<String>()
@@ -116,6 +111,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
             with(configuration) {
 
                 put(NODEFAULTLIBS, arguments.nodefaultlibs)
+                put(NOENDORSEDLIBS, arguments.noendorsedlibs)
                 put(NOSTDLIB, arguments.nostdlib)
                 put(NOPACK, arguments.nopack)
                 put(NOMAIN, arguments.nomain)
@@ -195,19 +191,21 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                     else -> put(GENERATE_TEST_RUNNER, TestRunnerKind.NONE)
                 }
                 // We need to download dependencies only if we use them ( = there are files to compile).
-                put(CHECK_DEPENDENCIES, if (configuration.kotlinSourceRoots.isNotEmpty()) {
-                    true
-                } else {
-                    arguments.checkDependencies
-                })
+                put(
+                    CHECK_DEPENDENCIES,
+                    configuration.kotlinSourceRoots.isNotEmpty()
+                            || !arguments.includes.isNullOrEmpty()
+                            || arguments.checkDependencies
+                )
                 if (arguments.friendModules != null)
                     put(FRIEND_MODULES, arguments.friendModules!!.split(File.pathSeparator).filterNot(String::isEmpty))
 
                 put(EXPORTED_LIBRARIES, selectExportedLibraries(configuration, arguments, outputKind))
+                put(INCLUDED_LIBRARIES, selectIncludes(configuration, arguments, outputKind))
                 put(FRAMEWORK_IMPORT_HEADERS, arguments.frameworkImportHeaders.toNonNullList())
                 arguments.emitLazyObjCHeader?.let { put(EMIT_LAZY_OBJC_HEADER_FILE, it) }
 
-                put(BITCODE_EMBEDDING_MODE, selectBitcodeEmbeddingMode(this, arguments, outputKind))
+                put(BITCODE_EMBEDDING_MODE, selectBitcodeEmbeddingMode(this, arguments))
                 put(DEBUG_INFO_VERSION, arguments.debugInfoFormatVersion.toInt())
                 put(COVERAGE, arguments.coverage)
                 put(LIBRARIES_TO_COVER, arguments.coveredLibraries.toNonNullList())
@@ -249,41 +247,21 @@ private fun selectFrameworkType(
 
 private fun selectBitcodeEmbeddingMode(
         configuration: CompilerConfiguration,
-        arguments: K2NativeCompilerArguments,
-        outputKind: CompilerOutputKind
-): BitcodeEmbedding.Mode {
-
-    if (outputKind != CompilerOutputKind.FRAMEWORK) {
-        return BitcodeEmbedding.Mode.NONE.also {
-            val flag = when {
-                arguments.embedBitcodeMarker -> EMBED_BITCODE_MARKER_FLAG
-                arguments.embedBitcode -> EMBED_BITCODE_FLAG
-                else -> return@also
-            }
-
+        arguments: K2NativeCompilerArguments
+): BitcodeEmbedding.Mode = when {
+    arguments.embedBitcodeMarker -> {
+        if (arguments.embedBitcode) {
             configuration.report(
                     STRONG_WARNING,
-                    "'$flag' is only supported when producing frameworks, " +
-                            "but the compiler is producing ${outputKind.name.toLowerCase()}"
+                    "'$EMBED_BITCODE_FLAG' is ignored because '$EMBED_BITCODE_MARKER_FLAG' is specified"
             )
         }
+        BitcodeEmbedding.Mode.MARKER
     }
-
-    return when {
-        arguments.embedBitcodeMarker -> {
-            if (arguments.embedBitcode) {
-                configuration.report(
-                        STRONG_WARNING,
-                        "'$EMBED_BITCODE_FLAG' is ignored because '$EMBED_BITCODE_MARKER_FLAG' is specified"
-                )
-            }
-            BitcodeEmbedding.Mode.MARKER
-        }
-        arguments.embedBitcode -> {
-            BitcodeEmbedding.Mode.FULL
-        }
-        else -> BitcodeEmbedding.Mode.NONE
+    arguments.embedBitcode -> {
+        BitcodeEmbedding.Mode.FULL
     }
+    else -> BitcodeEmbedding.Mode.NONE
 }
 
 private fun selectExportedLibraries(
@@ -302,6 +280,24 @@ private fun selectExportedLibraries(
         emptyList()
     } else {
         exportedLibraries
+    }
+}
+
+private fun selectIncludes(
+    configuration: CompilerConfiguration,
+    arguments: K2NativeCompilerArguments,
+    outputKind: CompilerOutputKind
+): List<String> {
+    val includes = arguments.includes?.toList().orEmpty()
+
+    return if (includes.isNotEmpty() && outputKind == CompilerOutputKind.LIBRARY) {
+        configuration.report(
+            ERROR,
+            "The $INCLUDE_ARG flag is not supported when producing ${outputKind.name.toLowerCase()}"
+        )
+        emptyList()
+    } else {
+        includes
     }
 }
 

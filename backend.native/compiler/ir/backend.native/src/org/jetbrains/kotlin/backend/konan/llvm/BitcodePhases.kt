@@ -7,6 +7,7 @@ package org.jetbrains.kotlin.backend.konan.llvm
 
 import llvm.*
 import org.jetbrains.kotlin.backend.konan.*
+import org.jetbrains.kotlin.backend.konan.descriptors.GlobalHierarchyAnalysis
 import org.jetbrains.kotlin.backend.konan.optimizations.*
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.IrElement
@@ -75,6 +76,12 @@ internal val devirtualizationPhase = makeKonanModuleOpPhase(
                     irModule, context, context.moduleDFG!!, ExternalModulesDFG(emptyList(), emptyMap(), emptyMap(), emptyMap())
             )
         }
+)
+
+internal val ghaPhase = makeKonanModuleOpPhase(
+        name = "GHAPhase",
+        description = "Global hierarchy analysis",
+        op = { context, irModule -> GlobalHierarchyAnalysis(context, irModule).run() }
 )
 
 internal val IrFunction.longName: String

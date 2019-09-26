@@ -102,6 +102,8 @@ FrameOverlay exportFrameOverlay;
 volatile int allocCount = 0;
 volatile int aliveMemoryStatesCount = 0;
 
+KBoolean g_checkLeaks = KonanNeedDebugInfo;
+
 // TODO: can we pass this variable as an explicit argument?
 THREAD_LOCAL_VARIABLE MemoryState* memoryState = nullptr;
 THREAD_LOCAL_VARIABLE FrameOverlay* currentFrame = nullptr;
@@ -289,7 +291,110 @@ inline bool isShareable(ContainerHeader* container) {
     return container == nullptr || container->shareable();
 }
 
+void garbageCollect();
+
 }  // namespace
+
+class ForeignRefManager {
+ public:
+  static ForeignRefManager* create() {
+    ForeignRefManager* result = konanConstructInstance<ForeignRefManager>();
+    result->addRef();
+    return result;
+  }
+
+  void addRef() {
+    atomicAdd(&refCount, 1);
+  }
+
+  void releaseRef() {
+    if (atomicAdd(&this->refCount, -1) == 0) {
+      // So the owning MemoryState has abandoned [this].
+      // Leaving the queued work items would result in memory leak.
+      // Luckily current thread has exclusive access to [this],
+      // so it can process the queue pretending like it takes ownership of all its objects:
+      this->processAbandoned();
+
+      konanDestructInstance(this);
+    }
+  }
+
+  bool tryReleaseRefOwned() {
+    if (atomicAdd(&this->refCount, -1) == 0) {
+      if (this->releaseList != nullptr) {
+        // There are no more holders of [this] to process the enqueued work items in [releaseRef].
+        // Revert the reference counter back and notify the caller to process and then retry:
+        atomicAdd(&this->refCount, 1);
+        return false;
+      }
+
+      konanDestructInstance(this);
+    }
+
+    return true;
+  }
+
+  void enqueueReleaseRef(ObjHeader* obj) {
+    ListNode* newListNode = konanConstructInstance<ListNode>();
+    newListNode->obj = obj;
+    while (true) {
+      ListNode* next = this->releaseList;
+      newListNode->next = next;
+      if (compareAndSet(&this->releaseList, next, newListNode)) break;
+    }
+  }
+
+  template <typename func>
+  void processEnqueuedReleaseRefsWith(func process) {
+    if (releaseList == nullptr) return;
+
+    ListNode* toProcess = nullptr;
+
+    while (true) {
+      toProcess = releaseList;
+      if (compareAndSet<ListNode*>(&this->releaseList, toProcess, nullptr)) break;
+    }
+
+    while (toProcess != nullptr) {
+      process(toProcess->obj);
+      ListNode* next = toProcess->next;
+      konanDestructInstance(toProcess);
+      toProcess = next;
+    }
+  }
+
+private:
+  int refCount;
+
+  struct ListNode {
+    ObjHeader* obj;
+    ListNode* next;
+  };
+
+  ListNode* volatile releaseList;
+
+  void processAbandoned() {
+    if (this->releaseList != nullptr) {
+      bool hadNoRuntimeInitialized = (memoryState == nullptr);
+
+      if (hadNoRuntimeInitialized) {
+        Kotlin_initRuntimeIfNeeded(); // Required by ReleaseHeapRef.
+      }
+
+      processEnqueuedReleaseRefsWith([](ObjHeader* obj) {
+        ReleaseHeapRef(obj);
+      });
+
+      if (hadNoRuntimeInitialized) {
+        // This thread is likely not intended to run Kotlin code.
+        // In this case it has no chances to process the release-refs enqueued above using
+        // the general heuristics, so do this manually:
+        garbageCollect();
+        // TODO: how to handle subsequent processAbandoned() calls?
+      }
+    }
+  }
+};
 
 struct MemoryState {
 #if TRACE_MEMORY
@@ -320,6 +425,8 @@ struct MemoryState {
   bool gcInProgress;
   // Objects to be released.
   ContainerHeaderList* toRelease;
+
+  ForeignRefManager* foreignRefManager;
 
   bool gcErgonomics;
   uint64_t lastGcTimestamp;
@@ -360,31 +467,6 @@ struct MemoryState {
   #define PRINT_STAT(state)
 #endif // COLLECT_STATISTIC
 };
-
-ObjHeader* KRefSharedHolder::ref() const {
-  verifyRefOwner();
-  return obj_;
-}
-
-void KRefSharedHolder::initRefOwner() {
-  RuntimeAssert(owner_ == nullptr, "Must be uninitialized");
-  owner_ = memoryState;
-}
-
-void KRefSharedHolder::verifyRefOwner() const {
-  // Note: checking for 'shareable()' and retrieving 'type_info()'
-  // are supposed to be correct even for unowned object.
-  if (owner_ != memoryState) {
-    // Initialized runtime is required to throw the exception below
-    // or to provide proper execution context for shared objects:
-    if (memoryState == nullptr) Kotlin_initRuntimeIfNeeded();
-    auto* container = obj_->container();
-    if (!isShareable(container)) {
-      // TODO: add some info about the owner.
-      ThrowIllegalObjectSharingException(obj_->type_info(), obj_);
-    }
-  }
-}
 
 namespace {
 
@@ -662,6 +744,16 @@ inline bool canFreeze(ContainerHeader* container) {
     return container != nullptr && !container->frozen();
 }
 
+inline bool isFreezableAtomic(ObjHeader* obj) {
+  return obj->type_info() == theFreezableAtomicReferenceTypeInfo;
+}
+
+inline bool isFreezableAtomic(ContainerHeader* container) {
+  RuntimeAssert(!isAggregatingFrozenContainer(container), "Must be single object");
+  ObjHeader* obj = reinterpret_cast<ObjHeader*>(container + 1);
+  return isFreezableAtomic(obj);
+}
+
 ContainerHeader* allocContainer(MemoryState* state, size_t size) {
  ContainerHeader* result = nullptr;
 #if USE_GC
@@ -863,7 +955,7 @@ void depthFirstTraversal(ContainerHeader* start, bool* hasCycles,
       continue;
     }
     toVisit.push_front(markAsRemoved(container));
-    traverseContainerReferredObjects(container, [hasCycles, firstBlocker, &order, &toVisit](ObjHeader* obj) {
+    traverseContainerReferredObjects(container, [container, hasCycles, firstBlocker, &order, &toVisit](ObjHeader* obj) {
       if (*firstBlocker != nullptr)
         return;
       if (obj->has_meta_object() && ((obj->meta_object()->flags_ & MF_NEVER_FROZEN) != 0)) {
@@ -879,7 +971,14 @@ void depthFirstTraversal(ContainerHeader* start, bool* hasCycles,
         if (!objContainer->seen() && !objContainer->marked()) {
           // Mark GRAY.
           objContainer->setSeen();
-          toVisit.push_front(objContainer);
+          // Here we do rather interesting trick: when doing DFS we postpone processing references going from
+          // FreezableAtomic, so that in 'order' referred value will be seen as not actually belonging
+          // to the same SCC (unless there are other edges not going through FreezableAtomic reaching the same value).
+          if (isFreezableAtomic(container)) {
+            toVisit.push_back(objContainer);
+          } else {
+            toVisit.push_front(objContainer);
+          }
         }
       }
     });
@@ -907,6 +1006,11 @@ void traverseStronglyConnectedComponent(ContainerHeader* start,
       }
     }
   }
+}
+
+template <bool Atomic>
+inline bool tryIncrementRC(ContainerHeader* container) {
+  return container->tryIncRefCount<Atomic>();
 }
 
 #if !USE_GC
@@ -1297,6 +1401,29 @@ inline void addHeapRef(const ObjHeader* header) {
     addHeapRef(const_cast<ContainerHeader*>(container));
 }
 
+inline bool tryAddHeapRef(ContainerHeader* container) {
+  switch (container->tag()) {
+    case CONTAINER_TAG_STACK:
+      break;
+    case CONTAINER_TAG_LOCAL:
+      if (!tryIncrementRC</* Atomic = */ false>(container)) return false;
+      break;
+    /* case CONTAINER_TAG_FROZEN: case CONTAINER_TAG_SHARED: */
+    default:
+      if (!tryIncrementRC</* Atomic = */ true>(container)) return false;
+      break;
+  }
+
+  MEMORY_LOG("AddHeapRef %p: rc=%d\n", container, container->refCount() - 1)
+  UPDATE_ADDREF_STAT(memoryState, container, needAtomicAccess(container), 0)
+  return true;
+}
+
+inline bool tryAddHeapRef(const ObjHeader* header) {
+  auto* container = header->container();
+  return (container != nullptr) ? tryAddHeapRef(container) : true;
+}
+
 template <bool Strict>
 inline void releaseHeapRef(ContainerHeader* container) {
   MEMORY_LOG("ReleaseHeapRef %p: rc=%d\n", container, container->refCount())
@@ -1377,6 +1504,11 @@ void processDecrements(MemoryState* state) {
        container = realShareableContainer(container);
      decrementRC(container);
   }
+
+  state->foreignRefManager->processEnqueuedReleaseRefsWith([](ObjHeader* obj) {
+    ContainerHeader* container = obj->container();
+    if (container != nullptr) decrementRC(container);
+  });
   state->gcSuspendCount--;
 }
 
@@ -1390,6 +1522,7 @@ void decrementStack(MemoryState* state) {
     while (current < end) {
       ObjHeader* obj = *current++;
       if (obj != nullptr) {
+        MEMORY_LOG("decrement stack %p\n", obj)
         auto* container = obj->container();
         if (container != nullptr)
           enqueueDecrementRC</* CanCollect = */ false>(container);
@@ -1453,6 +1586,13 @@ void garbageCollect(MemoryState* state, bool force) {
   }
   GC_LOG("GC: duration=%lld sinceLast=%lld\n", (gcEndTime - gcStartTime), gcStartTime - state->lastGcTimestamp);
   state->lastGcTimestamp = gcEndTime;
+
+#if TRACE_MEMORY
+  for (auto* obj: *state->toRelease) {
+    MEMORY_LOG("toRelease %p\n", obj)
+  }
+#endif
+
   GC_LOG("<<< GC: toFree %d toRelease %d\n", state->toFree->size(), state->toRelease->size())
 }
 
@@ -1480,6 +1620,58 @@ void deinitInstanceBody(const TypeInfo* typeInfo, void* body) {
   }
 }
 
+ForeignRefManager* initLocalForeignRef(ObjHeader* object) {
+  if (!IsStrictMemoryModel) return nullptr;
+
+  return memoryState->foreignRefManager;
+}
+
+ForeignRefManager* initForeignRef(ObjHeader* object) {
+  addHeapRef(object);
+
+  if (!IsStrictMemoryModel) return nullptr;
+
+  // Note: it is possible to return nullptr for shared object as an optimization,
+  // but this will force the implementation to release objects on uninitialized threads
+  // which is generally a memory leak. See [deinitForeignRef].
+  auto* manager = memoryState->foreignRefManager;
+  manager->addRef();
+  return manager;
+}
+
+bool isForeignRefAccessible(ObjHeader* object, ForeignRefManager* manager) {
+  if (!IsStrictMemoryModel) return true;
+
+  if (manager == memoryState->foreignRefManager) {
+    // Note: it is important that this code neither crashes nor returns false-negative result
+    // (although may produce false-positive one) if [manager] is a dangling pointer.
+    // See BackRefFromAssociatedObject::releaseRef for more details.
+    return true;
+  }
+
+  // Note: getting container and checking it with 'isShareable()' is supposed to be correct even for unowned object.
+  return isShareable(object->container());
+}
+
+void deinitForeignRef(ObjHeader* object, ForeignRefManager* manager) {
+  if (IsStrictMemoryModel) {
+    if (memoryState != nullptr && isForeignRefAccessible(object, manager)) {
+      releaseHeapRef<true>(object);
+    } else {
+      // Prefer this for (memoryState == nullptr) since otherwise the object may leak:
+      // an uninitialized thread did not run any Kotlin code;
+      // it may be an externally-managed thread which is not supposed to run Kotlin code
+      // and not going to exit soon.
+      manager->enqueueReleaseRef(object);
+    }
+
+    manager->releaseRef();
+  } else {
+    releaseHeapRef<false>(object);
+    RuntimeAssert(manager == nullptr, "must be null");
+  }
+}
+
 MemoryState* initMemory() {
   RuntimeAssert(offsetof(ArrayHeader, typeInfoOrMeta_)
                 ==
@@ -1503,6 +1695,7 @@ MemoryState* initMemory() {
   memoryState->allocSinceLastGcThreshold = kMaxGcAllocThreshold;
   memoryState->gcErgonomics = true;
 #endif
+  memoryState->foreignRefManager = ForeignRefManager::create();
   atomicAdd(&aliveMemoryStatesCount, 1);
   return memoryState;
 }
@@ -1513,7 +1706,7 @@ void deinitMemory(MemoryState* memoryState) {
   do {
     GC_LOG("Calling garbageCollect from DeinitMemory()\n")
     garbageCollect(memoryState, true);
-  } while (memoryState->toRelease->size() > 0);
+  } while (memoryState->toRelease->size() > 0 || !memoryState->foreignRefManager->tryReleaseRefOwned());
   RuntimeAssert(memoryState->toFree->size() == 0, "Some memory have not been released after GC");
   RuntimeAssert(memoryState->toRelease->size() == 0, "Some memory have not been released after GC");
   konanDestructInstance(memoryState->toFree);
@@ -1533,10 +1726,16 @@ void deinitMemory(MemoryState* memoryState) {
   }
 #else
 #if USE_GC
-  if (IsStrictMemoryModel && lastMemoryState)
-    RuntimeAssert(allocCount == 0, "Memory leaks found");
-#endif
-#endif
+  if (IsStrictMemoryModel && lastMemoryState && allocCount > 0 && g_checkLeaks) {
+    char buf[1024];
+    konan::snprintf(buf, sizeof(buf),
+        "Memory leaks detected, %d objects leaked!\n"
+        "Use `Platform.isMemoryLeakCheckerActive = false` to avoid this check.\n", allocCount);
+    konan::consoleErrorUtf8(buf, konan::strnlen(buf, sizeof(buf)));
+    konan::abort();
+  }
+#endif  // USE_GC
+#endif  // TRACE_MEMORY
 
   PRINT_EVENT(memoryState)
   DEINIT_EVENT(memoryState)
@@ -2096,56 +2295,65 @@ void freezeAcyclic(ContainerHeader* rootContainer, ContainerHeaderSet* newlyFroz
   }
 }
 
-void freezeCyclic(ContainerHeader* rootContainer,
+void freezeCyclic(ObjHeader* root,
                   const KStdVector<ContainerHeader*>& order,
                   ContainerHeaderSet* newlyFrozen) {
   KStdUnorderedMap<ContainerHeader*, KStdVector<ContainerHeader*>> reversedEdges;
-  KStdDeque<ContainerHeader*> queue;
-  queue.push_back(rootContainer);
+  KStdDeque<ObjHeader*> queue;
+  queue.push_back(root);
   while (!queue.empty()) {
-    ContainerHeader* current = queue.front();
+    ObjHeader* current = queue.front();
     queue.pop_front();
-    current->unMark();
-    reversedEdges.emplace(current, KStdVector<ContainerHeader*>(0));
-    traverseContainerReferredObjects(current, [current, &queue, &reversedEdges](ObjHeader* obj) {
+    ContainerHeader* currentContainer = current->container();
+    currentContainer->unMark();
+    reversedEdges.emplace(currentContainer, KStdVector<ContainerHeader*>(0));
+    traverseContainerReferredObjects(currentContainer, [current, currentContainer, &queue, &reversedEdges](ObjHeader* obj) {
           ContainerHeader* objContainer = obj->container();
           if (canFreeze(objContainer)) {
             if (objContainer->marked())
-              queue.push_back(objContainer);
-            reversedEdges.emplace(objContainer, KStdVector<ContainerHeader*>(0)).first->second.push_back(current);
+              queue.push_back(obj);
+            // We ignore references from FreezableAtomicsReference during condensation, to avoid KT-33824.
+            if (!isFreezableAtomic(current))
+              reversedEdges.emplace(objContainer, KStdVector<ContainerHeader*>(0)).
+                first->second.push_back(currentContainer);
           }
       });
-    }
+   }
 
-    KStdVector<KStdVector<ContainerHeader*>> components;
-    MEMORY_LOG("Condensation:\n");
-    // Enumerate in the topological order.
-    for (auto it = order.rbegin(); it != order.rend(); ++it) {
-      auto* container = *it;
-      if (container->marked()) continue;
-      KStdVector<ContainerHeader*> component;
-      traverseStronglyConnectedComponent(container, &reversedEdges, &component);
-      MEMORY_LOG("SCC:\n");
+   KStdVector<KStdVector<ContainerHeader*>> components;
+   MEMORY_LOG("Condensation:\n");
+   // Enumerate in the topological order.
+   for (auto it = order.rbegin(); it != order.rend(); ++it) {
+     auto* container = *it;
+     if (container->marked()) continue;
+     KStdVector<ContainerHeader*> component;
+     traverseStronglyConnectedComponent(container, &reversedEdges, &component);
+     MEMORY_LOG("SCC:\n");
   #if TRACE_MEMORY
-      for (auto c: component)
-        konan::consolePrintf("    %p\n", c);
+     for (auto c: component)
+       konan::consolePrintf("    %p\n", c);
   #endif
-      components.push_back(std::move(component));
-    }
+     components.push_back(std::move(component));
+   }
 
-    // Enumerate strongly connected components in reversed topological order.
+  // Enumerate strongly connected components in reversed topological order.
   for (auto it = components.rbegin(); it != components.rend(); ++it) {
     auto& component = *it;
     int internalRefsCount = 0;
     int totalCount = 0;
     for (auto* container : component) {
+      RuntimeAssert(!isAggregatingFrozenContainer(container), "Must not be called on such containers");
       totalCount += container->refCount();
+      if (isFreezableAtomic(container)) {
+        RuntimeAssert(component.size() == 1, "Must be trivial condensation");
+        continue;
+      }
       traverseContainerReferredObjects(container, [&internalRefsCount](ObjHeader* obj) {
           auto* container = obj->container();
           if (canFreeze(container))
-              ++internalRefsCount;
+            ++internalRefsCount;
         });
-      }
+    }
 
     // Freeze component.
     for (auto* container : component) {
@@ -2161,11 +2369,12 @@ void freezeCyclic(ContainerHeader* rootContainer,
       // meta-object, where aggregating container is stored.
       container->setRefCount(0);
     }
+
     // Create fictitious container for the whole component.
     auto superContainer = component.size() == 1 ? component[0] : allocAggregatingFrozenContainer(component);
     // Don't count internal references.
     MEMORY_LOG("Setting aggregating %p rc to %d (total %d inner %d)\n", \
-        superContainer, totalCount - internalRefsCount, totalCount, internalRefsCount)
+       superContainer, totalCount - internalRefsCount, totalCount, internalRefsCount)
     superContainer->setRefCount(totalCount - internalRefsCount);
     newlyFrozen->insert(superContainer);
   }
@@ -2216,7 +2425,7 @@ void freezeSubgraph(ObjHeader* root) {
   ContainerHeaderSet newlyFrozen;
   // Now unmark all marked objects, and freeze them, if no cycles detected.
   if (hasCycles) {
-    freezeCyclic(rootContainer, order, &newlyFrozen);
+    freezeCyclic(root, order, &newlyFrozen);
   } else {
     freezeAcyclic(rootContainer, &newlyFrozen);
   }
@@ -2463,8 +2672,8 @@ ArrayHeader* ArenaContainer::PlaceArray(const TypeInfo* type_info, uint32_t coun
 extern "C" {
 
 // Private memory interface.
-void AddRefFromAssociatedObject(const ObjHeader* object) {
-  addHeapRef(const_cast<ObjHeader*>(object));
+bool TryAddHeapRef(const ObjHeader* object) {
+  return tryAddHeapRef(object);
 }
 
 void ReleaseHeapRefStrict(const ObjHeader* object) {
@@ -2474,12 +2683,24 @@ void ReleaseHeapRefRelaxed(const ObjHeader* object) {
   releaseHeapRef<false>(const_cast<ObjHeader*>(object));
 }
 
-void ReleaseRefFromAssociatedObject(const ObjHeader* object) {
-  ReleaseHeapRef(object);
-}
-
 void DeinitInstanceBody(const TypeInfo* typeInfo, void* body) {
   deinitInstanceBody(typeInfo, body);
+}
+
+ForeignRefContext InitLocalForeignRef(ObjHeader* object) {
+  return initLocalForeignRef(object);
+}
+
+ForeignRefContext InitForeignRef(ObjHeader* object) {
+  return initForeignRef(object);
+}
+
+void DeinitForeignRef(ObjHeader* object, ForeignRefContext context) {
+  deinitForeignRef(object, context);
+}
+
+bool IsForeignRefAccessible(ObjHeader* object, ForeignRefContext context) {
+  return isForeignRefAccessible(object, context);
 }
 
 // Public memory interface.
@@ -2727,5 +2948,14 @@ KBoolean Konan_ensureAcyclicAndSet(ObjHeader* where, KInt index, ObjHeader* what
 void Kotlin_Any_share(ObjHeader* obj) {
   shareAny(obj);
 }
+
+KBoolean Konan_Platform_getMemoryLeakChecker() {
+  return g_checkLeaks;
+}
+
+void Konan_Platform_setMemoryLeakChecker(KBoolean value) {
+  g_checkLeaks = value;
+}
+
 
 } // extern "C"

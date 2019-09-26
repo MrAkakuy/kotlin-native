@@ -66,6 +66,8 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("native library file paths")
         val NODEFAULTLIBS: CompilerConfigurationKey<Boolean>
                 = CompilerConfigurationKey.create("don't link with the default libraries")
+        val NOENDORSEDLIBS: CompilerConfigurationKey<Boolean>
+                = CompilerConfigurationKey.create("don't link with the endorsed libraries")
         val NOMAIN: CompilerConfigurationKey<Boolean> 
                 = CompilerConfigurationKey.create("assume 'main' entry point to be provided by external libraries")
         val NOSTDLIB: CompilerConfigurationKey<Boolean> 
@@ -94,10 +96,12 @@ class KonanConfigKeys {
                 = CompilerConfigurationKey.create("library search path repositories")
         val RUNTIME_FILE: CompilerConfigurationKey<String?> 
                 = CompilerConfigurationKey.create("override default runtime file path")
+        val INCLUDED_LIBRARIES: CompilerConfigurationKey<List<String>>
+                = CompilerConfigurationKey("klibs processed in the same manner as source files")
         val SOURCE_MAP: CompilerConfigurationKey<List<String>> 
                 = CompilerConfigurationKey.create("generate source map")
         val STATIC_FRAMEWORK: CompilerConfigurationKey<Boolean>
-                = CompilerConfigurationKey.create("Produce a static library for a framework")
+                = CompilerConfigurationKey.create("produce a static library for a framework")
         val TARGET: CompilerConfigurationKey<String?>
                 = CompilerConfigurationKey.create("target we compile for")
         val TEMPORARY_FILES_DIR: CompilerConfigurationKey<String?>

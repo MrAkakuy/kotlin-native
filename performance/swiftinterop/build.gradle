@@ -36,22 +36,27 @@ kotlin {
         commonMain {
             dependencies {
                 implementation "org.jetbrains.kotlin:kotlin-stdlib-common:$kotlinVersion"
+                implementation project(":endorsedLibraries:kotlinx.cli")
             }
             kotlin.srcDir "src"
             kotlin.srcDir "../shared/src/main/kotlin"
-            kotlin.srcDir "$rootProject.projectDir/endorsedLibraries/kliopt/src/main/kotlin"
             kotlin.srcDir "$toolsPath/benchmarks/shared/src/main/kotlin"
         }
         macosMain {
             dependsOn commonMain
             kotlin.srcDir "../shared/src/main/kotlin-native/common"
             kotlin.srcDir "../shared/src/main/kotlin-native/posix"
-            kotlin.srcDir "$rootProject.projectDir/endorsedLibraries/kliopt/src/main/kotlin-native"
+             
+            // Exclude kotlinx.cli added in commonMain dependencies and inherited by macosMain.
+            configurations.getByName(implementationConfigurationName) {
+                exclude module: "kotlinx.cli"
+            }
         }
     }
 
     macosX64("macos") {
-        compilations.main.extraOpts = (project.hasProperty('compilerArgs') ? compilerArgs.split() : []) + '-opt'
+        compilations.main.kotlinOptions.freeCompilerArgs = (project.hasProperty('compilerArgs') ? compilerArgs.split() : [])
+        compilations.main.enableEndorsedLibs = true
         binaries {
             framework(frameworkName, [RELEASE])
         }
