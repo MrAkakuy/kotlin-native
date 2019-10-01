@@ -92,8 +92,12 @@ abstract class LinkerFlags(val configurables: Configurables)
 open class AndroidLinker(targetProperties: AndroidConfigurables)
     : LinkerFlags(targetProperties), AndroidConfigurables by targetProperties {
 
-    private val prefix = "$absoluteTargetToolchain/bin/"
-    private val clang = if (HostManager.hostIsMingw) "$prefix/clang.cmd" else "$prefix/clang"
+    private val clangQuad = when (targetProperties.targetArg) {
+        "arm-linux-androideabi" -> "armv7a-linux-androideabi"
+        else -> targetProperties.targetArg
+    }
+    private val prefix = "$absoluteTargetToolchain/bin/${clangQuad}${Android.API}"
+    private val clang = if (HostManager.hostIsMingw) "$prefix-clang.cmd" else "$prefix-clang"
     private val ar = "$absoluteTargetToolchain/${targetProperties.targetArg}/bin/ar"
 
     override val useCompilerDriverAsLinker: Boolean get() = true
@@ -108,13 +112,23 @@ open class AndroidLinker(targetProperties: AndroidConfigurables)
             return staticGnuArCommands(ar, executable, objectFiles, libraries)
 
         val dynamic = kind == LinkerOutputKind.DYNAMIC_LIBRARY
-        // liblog.so must be linked in, as we use its functionality in runtime.
+        val toolchainSysroot = "${absoluteTargetToolchain}/sysroot"
+        val architectureDir = Android.architectureDirForTarget(target)
+        val apiSysroot = "$absoluteTargetSysRoot/$architectureDir"
+        val clangTarget = targetArg!!
+        val libDirs = listOf(
+                "--sysroot=$apiSysroot",
+                if (target == KonanTarget.ANDROID_X64) "-L$apiSysroot/usr/lib64" else "-L$apiSysroot/usr/lib",
+                "-L$toolchainSysroot/usr/lib/$clangTarget/${Android.API}",
+                "-L$toolchainSysroot/usr/lib/$clangTarget")
         return listOf(Command(clang).apply {
             +"-o"
             +executable
             +"-fPIC"
             +"-shared"
-            +"-llog"
+            +"-target"
+            +targetArg!!
+            +libDirs
             +objectFiles
             if (optimize) +linkerOptimizationFlags
             if (!debug) +linkerNoDebugFlags
@@ -135,20 +149,28 @@ open class MacOSBasedLinker(targetProperties: AppleConfigurables)
     private val strip = "$absoluteTargetToolchain/usr/bin/strip"
     private val dsymutil = "$absoluteLlvmHome/bin/llvm-dsymutil"
 
-    private fun provideCompilerRtLibrary(libraryName: String): String? {
-        val suffix = if (libraryName.isNotEmpty() && target == KonanTarget.IOS_X64) {
-            "iossim"
-        } else {
-            when (val family = configurables.target.family) {
-                Family.OSX -> "osx"
-                Family.IOS -> "ios"
-                else -> error("Family $family is unsupported")
-            }
-        }
-        val dir = File("$absoluteTargetToolchain/usr/lib/clang/").listFiles.firstOrNull()?.absolutePath
-        val mangledName = if (libraryName.isEmpty()) "" else "${libraryName}_"
+    private val KonanTarget.isSimulator: Boolean
+        get() = this == KonanTarget.TVOS_X64 || this == KonanTarget.IOS_X64 ||
+                this == KonanTarget.WATCHOS_X86 || this == KonanTarget.WATCHOS_X64
 
-        return if (dir != null) "$dir/lib/darwin/libclang_rt.$mangledName$suffix.a" else null
+    private fun provideCompilerRtLibrary(libraryName: String): String? {
+        val prefix = when (target.family) {
+            Family.IOS -> "ios"
+            Family.WATCHOS -> "watchos"
+            Family.TVOS -> "tvos"
+            Family.OSX -> "osx"
+            else -> error("Target $target is unsupported")
+        }
+        val suffix = if (libraryName.isNotEmpty() && target.isSimulator) {
+            "sim"
+        } else {
+            ""
+        }
+
+        val dir = File("$absoluteTargetToolchain/usr/lib/clang/").listFiles.firstOrNull()?.absolutePath
+        val mangledLibraryName = if (libraryName.isEmpty()) "" else "${libraryName}_"
+
+        return if (dir != null) "$dir/lib/darwin/libclang_rt.$mangledLibraryName$prefix$suffix.a" else null
     }
 
     private val compilerRtLibrary: String? by lazy {
@@ -212,7 +234,9 @@ open class MacOSBasedLinker(targetProperties: AppleConfigurables)
     private fun rpath(dynamic: Boolean): List<String> = listOfNotNull(
             when (target.family) {
                 Family.OSX -> "@executable_path/../Frameworks"
-                Family.IOS -> "@executable_path/Frameworks"
+                Family.IOS,
+                Family.WATCHOS,
+                Family.TVOS -> "@executable_path/Frameworks"
                 else -> error(target)
             },
             "@loader_path/Frameworks".takeIf { dynamic }
@@ -425,16 +449,27 @@ fun linker(configurables: Configurables): LinkerFlags =
         when (configurables.target) {
             KonanTarget.LINUX_X64, KonanTarget.LINUX_ARM32_HFP,  KonanTarget.LINUX_ARM64 ->
                 LinuxBasedLinker(configurables as LinuxConfigurables)
+
             KonanTarget.LINUX_MIPS32, KonanTarget.LINUX_MIPSEL32 ->
                 LinuxBasedLinker(configurables as LinuxMIPSConfigurables)
-            KonanTarget.MACOS_X64, KonanTarget.IOS_ARM32, KonanTarget.IOS_ARM64, KonanTarget.IOS_X64 ->
+
+            KonanTarget.MACOS_X64,
+            KonanTarget.TVOS_X64, KonanTarget.TVOS_ARM64,
+            KonanTarget.IOS_ARM32, KonanTarget.IOS_ARM64, KonanTarget.IOS_X64,
+            KonanTarget.WATCHOS_ARM64, KonanTarget.WATCHOS_ARM32,
+            KonanTarget.WATCHOS_X64, KonanTarget.WATCHOS_X86 ->
                 MacOSBasedLinker(configurables as AppleConfigurables)
-            KonanTarget.ANDROID_ARM32, KonanTarget.ANDROID_ARM64 ->
+
+            KonanTarget.ANDROID_ARM32, KonanTarget.ANDROID_ARM64,
+            KonanTarget.ANDROID_X86, KonanTarget.ANDROID_X64 ->
                 AndroidLinker(configurables as AndroidConfigurables)
+
             KonanTarget.MINGW_X64, KonanTarget.MINGW_X86 ->
                 MingwLinker(configurables as MingwConfigurables)
+
             KonanTarget.WASM32 ->
                 WasmLinker(configurables as WasmConfigurables)
+
             is KonanTarget.ZEPHYR ->
                 ZephyrLinker(configurables as ZephyrConfigurables)
         }

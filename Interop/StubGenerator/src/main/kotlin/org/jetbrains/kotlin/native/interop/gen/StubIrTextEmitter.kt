@@ -227,32 +227,33 @@ class StubIrTextEmitter(
         override fun visitFunction(element: FunctionStub, owner: StubContainer?) {
             if (element in bridgeBuilderResult.excludedStubs) return
 
-            val modality = renderMemberModality(element.modality, owner)
+            val header = run {
+                val parameters = element.parameters.joinToString(prefix = "(", postfix = ")") { renderFunctionParameter(it) }
+                val receiver = element.receiver?.let { renderFunctionReceiver(it) + "." } ?: ""
+                val typeParameters = renderTypeParameters(element.typeParameters)
+                val modality = renderMemberModality(element.modality, owner)
+                "${modality}fun$typeParameters $receiver${element.name.asSimpleName()}$parameters: ${renderStubType(element.returnType)}"
+            }
+            if (!nativeBridges.isSupported(element)) {
+                sequenceOf(
+                        annotationForUnableToImport,
+                        "$header = throw UnsupportedOperationException()"
+                ).forEach(out)
+                return
+            }
             element.annotations.forEach {
                 out(renderAnnotation(it))
             }
-            val parameters = element.parameters.joinToString(prefix = "(", postfix = ")") { renderFunctionParameter(it) }
-            val receiver = element.receiver?.let { renderFunctionReceiver(it) + "." } ?: ""
-            val typeParameters = renderTypeParameters(element.typeParameters)
-            val header = "${modality}fun$typeParameters $receiver${element.name.asSimpleName()}$parameters: ${renderStubType(element.returnType)}"
             when {
                 element.external -> out("external $header")
                 element.isOptionalObjCMethod() -> out("$header = optional()")
                 owner != null && owner.isInterface -> out(header)
                 element.modality == MemberStubModality.ABSTRACT -> out(header)
                 element.kotlinFunctionAlias != null -> out("$header = ${element.kotlinFunctionAlias}")
-                else -> if (nativeBridges.isSupported(element)) {
-                    block(header) {
-                        functionalBridgeBodies.getValue(element).forEach(out)
-                    }
-                } else {
-                    sequenceOf(
-                            annotationForUnableToImport,
-                            "$header = throw UnsupportedOperationException()"
-                    ).forEach(out)
+                else -> block(header) {
+                    functionalBridgeBodies.getValue(element).forEach(out)
                 }
             }
-
         }
 
         override fun visitProperty(element: PropertyStub, owner: StubContainer?) {

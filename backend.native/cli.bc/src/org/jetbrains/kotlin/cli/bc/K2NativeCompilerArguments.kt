@@ -57,8 +57,11 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
             valueDescription = "<path>", description = "Include the native bitcode library", delimiter = "")
     var nativeLibraries: Array<String>? = null
 
-    @Argument(value = "-nodefaultlibs", description = "Don't link the libraries from dist/klib automatically")
+    @Argument(value = "-no-default-libs", deprecatedName = "-nodefaultlibs", description = "Don't link the libraries from dist/klib automatically")
     var nodefaultlibs: Boolean = false
+
+    @Argument(value = "-no-endorsed-libs", description = "Don't link the endorsed libraries from dist automatically")
+    var noendorsedlibs: Boolean = false
 
     @Argument(value = "-nomain", description = "Assume 'main' entry point to be provided by external libraries")
     var nomain: Boolean = false
@@ -120,8 +123,8 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(
             value = "-Xexport-library",
             valueDescription = "<path>",
-            description = "Path to the library to be included into produced framework API\n" +
-                    "Must be the path of a library passed with '-library'",
+            description = "A library to be included into produced framework API.\n" +
+                    "Must be one of libraries passed with '-library'",
             delimiter = ""
     )
     var exportedLibraries: Array<String>? = null
@@ -157,6 +160,13 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = "-Xruntime", deprecatedName = "--runtime", valueDescription = "<path>", description = "Override standard 'runtime.bc' location")
     var runtimeFile: String? = null
 
+    @Argument(
+        value = INCLUDE_ARG,
+        valueDescription = "<path>",
+        description = "A path to an intermediate library that should be processed in the same manner as source files.\n"
+    )
+    var includes: Array<String>? = null
+
     @Argument(value = STATIC_FRAMEWORK_FLAG, description = "Create a framework with a static library instead of a dynamic one")
     var staticFramework: Boolean = false
 
@@ -185,7 +195,8 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(
             value = "-Xlibrary-to-cover",
             valueDescription = "<path>",
-            description = "Path to library that should be covered.",
+            description = "Provide code coverage for the given library.\n" +
+                    "Must be one of libraries passed with '-library'",
             delimiter = ""
     )
     var coveredLibraries: Array<String>? = null
@@ -208,3 +219,4 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
 const val EMBED_BITCODE_FLAG = "-Xembed-bitcode"
 const val EMBED_BITCODE_MARKER_FLAG = "-Xembed-bitcode-marker"
 const val STATIC_FRAMEWORK_FLAG = "-Xstatic-framework"
+const val INCLUDE_ARG = "-Xinclude"

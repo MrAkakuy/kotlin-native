@@ -22,6 +22,7 @@ import org.gradle.api.Project
 import org.gradle.process.ExecResult
 import org.gradle.process.ExecSpec
 import org.gradle.util.ConfigureUtil
+import org.jetbrains.kotlin.konan.target.Architecture
 
 import org.jetbrains.kotlin.konan.target.KonanTarget
 import org.jetbrains.kotlin.konan.target.Xcode
@@ -84,7 +85,10 @@ fun create(project: Project): ExecutorService {
             }
         }
 
-        KonanTarget.IOS_X64 -> simulator(project)
+        KonanTarget.IOS_X64,
+        KonanTarget.TVOS_X64,
+        KonanTarget.WATCHOS_X86,
+        KonanTarget.WATCHOS_X64 -> simulator(project)
 
         else -> {
             if (project.hasProperty("remote")) sshExecutor(project)
@@ -213,8 +217,16 @@ fun localExecutor(project: Project) = { a: Action<in ExecSpec> -> project.exec(a
  */
 private fun simulator(project: Project) : ExecutorService = object : ExecutorService {
 
+    private val target = project.testTarget
+
     private val simctl by lazy {
-        val sdk = Xcode.current.iphonesimulatorSdk
+        val sdk = when (target) {
+            KonanTarget.TVOS_X64 -> Xcode.current.appletvsimulatorSdk
+            KonanTarget.IOS_X64 -> Xcode.current.iphonesimulatorSdk
+            KonanTarget.WATCHOS_X64,
+            KonanTarget.WATCHOS_X86 -> Xcode.current.watchsimulatorSdk
+            else -> error("Unexpected simulation target: $target")
+        }
         val out = ByteArrayOutputStream()
         val result = project.exec {
             it.commandLine("/usr/bin/xcrun", "--find", "simctl", "--sdk", sdk)
@@ -224,11 +236,24 @@ private fun simulator(project: Project) : ExecutorService = object : ExecutorSer
         out.toString("UTF-8").trim()
     }
 
-    private val iosDevice = project.findProperty("iosDevice")?.toString() ?: "iPhone 6"
+    private val device = project.findProperty("iosDevice")?.toString() ?: when (target) {
+        KonanTarget.TVOS_X64 -> "Apple TV 4K"
+        KonanTarget.IOS_X64 -> "iPhone 6"
+        KonanTarget.WATCHOS_X64,
+        KonanTarget.WATCHOS_X86 -> "Apple Watch Series 4 - 40mm"
+        else -> error("Unexpected simulation target: $target")
+    }
+
+    private val archSpecification = when (target.architecture) {
+        Architecture.X86 -> listOf("-a", "i386")
+        Architecture.X64 -> listOf() // x86-64 is used by default.
+        else -> error("${target.architecture} can't be used in simulator.")
+    }.toTypedArray()
 
     override fun execute(action: Action<in ExecSpec>): ExecResult? = project.exec { execSpec ->
         action.execute(execSpec)
-        with(execSpec) { commandLine = listOf(simctl, "spawn", iosDevice, executable) + args }
+        // Starting Xcode 11 `simctl spawn` requires explicit `--standalone` flag.
+        with(execSpec) { commandLine = listOf(simctl, "spawn", "--standalone", *archSpecification, device, executable) + args }
     }
 }
 

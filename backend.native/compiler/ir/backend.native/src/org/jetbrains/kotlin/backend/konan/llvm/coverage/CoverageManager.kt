@@ -27,9 +27,7 @@ internal class CoverageManager(val context: Context) {
             context.config.configuration.getBoolean(KonanConfigKeys.COVERAGE)
 
     private val librariesToCover: Set<String> =
-            context.config.configuration.getList(KonanConfigKeys.LIBRARIES_TO_COVER)
-                    .map { File(it).absolutePath.removeSuffixIfPresent(".klib") }
-                    .toSet()
+            context.config.coveredLibraries.map { it.libraryName }.toSet()
 
     private val llvmProfileFilenameGlobal = "__llvm_profile_filename"
 
@@ -52,7 +50,7 @@ internal class CoverageManager(val context: Context) {
     }
 
     private fun checkRestrictions(): Boolean  {
-        val isKindAllowed = with(context.config.produce) { isNativeBinary || this == CompilerOutputKind.BITCODE }
+        val isKindAllowed = context.config.produce.involvesBitcodeGeneration
         val target = context.config.target
         val isTargetAllowed = target == KonanTarget.MACOS_X64 || target == KonanTarget.IOS_X64
         return isKindAllowed && isTargetAllowed
@@ -67,7 +65,8 @@ internal class CoverageManager(val context: Context) {
         val coveredUserCode = if (shouldCoverProgram) setOf(context.moduleDescriptor) else emptySet()
         val coveredLibs = context.irModules.filter { it.key in librariesToCover }.values
                 .map { it.descriptor }.toSet()
-        coveredLibs + coveredUserCode
+        val coveredIncludedLibs = if (shouldCoverProgram) context.getIncludedLibraryDescriptors().toSet() else emptySet()
+        coveredLibs + coveredUserCode + coveredIncludedLibs
     }
 
     private fun fileCoverageFilter(file: IrFile) =

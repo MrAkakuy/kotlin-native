@@ -38,7 +38,9 @@ fun Type.getStringRepresentation(): String = when (this) {
     is IntegerType -> this.spelling
     is FloatingType -> this.spelling
 
-    is PointerType, is ArrayType, is CxxClassPointerType -> "void*"
+    is PointerType -> getPointerTypeStringRepresentation(this.pointeeType)
+    is ArrayType -> getPointerTypeStringRepresentation(this.elemType)
+    is CxxClassPointerType -> getPointerTypeStringRepresentation(this.pointeeType)
 
     is RecordType -> this.decl.spelling
     is CxxClassType -> this.decl.spelling
@@ -59,7 +61,7 @@ fun Type.getStringRepresentation(): String = when (this) {
         is ObjCBlockPointer -> "id"
     }
 
-    else -> throw kotlin.NotImplementedError()
+    else -> throw NotImplementedError()
 }
 
 fun getPointerTypeStringRepresentation(pointee: Type): String =

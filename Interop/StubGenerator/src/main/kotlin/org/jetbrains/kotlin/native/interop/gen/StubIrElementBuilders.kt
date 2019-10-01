@@ -569,13 +569,16 @@ internal abstract class FunctionalStubBuilder(
 
         val annotations: List<AnnotationStub>
         val mustBeExternal: Boolean
-        if (!isVararg || platform != KotlinPlatform.NATIVE) {
+
+        if (platform == KotlinPlatform.JVM) {
             annotations = emptyList()
             mustBeExternal = false
         } else {
-            val type = WrapperStubType(KotlinTypes.any.makeNullable())
-            parameters += FunctionParameterStub("variadicArguments", type, isVararg = true)
-            annotations = listOf(AnnotationStub.CCall.Symbol(context.generateNextUniqueId("knifunptr_")))
+            if (isVararg) {
+                val type = WrapperStubType(KotlinTypes.any.makeNullable())
+                parameters += FunctionParameterStub("variadicArguments", type, isVararg = true)
+            }
+            annotations = listOf(AnnotationStub.CCall.Symbol(context.generateNextUniqueId("knifunptr_") + "_$functionName"))
             mustBeExternal = true
         }
 
