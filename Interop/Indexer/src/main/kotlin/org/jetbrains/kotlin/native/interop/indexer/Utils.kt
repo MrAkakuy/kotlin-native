@@ -201,15 +201,19 @@ fun StructDef.fieldsHaveDefaultAlignment(): Boolean {
     return true
 }
 
-internal fun CValue<CXCursor>.isLeaf(): Boolean {
-    var hasChildren = false
+internal fun CValue<CXCursor>.hasExpressionChild(): Boolean {
+    var result = false
 
-    visitChildren(this) { _, _ ->
-        hasChildren = true
-        CXChildVisitResult.CXChildVisit_Break
+    visitChildren(this) { cursor, _ ->
+        if (clang_isExpression(cursor.kind) != 0) {
+            result = true
+            CXChildVisitResult.CXChildVisit_Break
+        } else {
+            CXChildVisitResult.CXChildVisit_Continue
+        }
     }
 
-    return !hasChildren
+    return result
 }
 
 internal fun List<String>.toNativeStringArray(scope: AutofreeScope): CArrayPointer<CPointerVar<ByteVar>> {
@@ -253,6 +257,11 @@ fun Compilation.copy(
         language = language
 )
 
+// Clang-8 crashes when consuming a precompiled header built with -fmodule-map-file argument (see KT-34467).
+// We ignore this argument when building a pch to workaround this crash.
+fun Compilation.copyWithArgsForPCH(): Compilation =
+        copy(compilerArgs = compilerArgs.filterNot { it.startsWith("-fmodule-map-file") })
+
 data class CompilationImpl(
         override val includes: List<String>,
         override val additionalPreambleLines: List<String>,
@@ -267,7 +276,7 @@ data class CompilationImpl(
  */
 fun Compilation.precompileHeaders(): CompilationWithPCH = withIndex { index ->
     val options = CXTranslationUnit_ForSerialization
-    val translationUnit = this.parse(index, options)
+    val translationUnit = copyWithArgsForPCH().parse(index, options)
     try {
         translationUnit.ensureNoCompileErrors()
         withPrecompiledHeader(translationUnit)
