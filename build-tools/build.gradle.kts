@@ -30,6 +30,7 @@ group = "org.jetbrains.kotlin"
 version = konanVersion
 
 repositories {
+    jcenter()
     maven(kotlinCompilerRepo)
     maven(buildKotlinCompilerRepo)
     maven("https://cache-redirector.jetbrains.com/maven-central")
@@ -53,6 +54,7 @@ dependencies {
 
     // Located in <repo root>/shared and always provided by the composite build.
     api("org.jetbrains.kotlin:kotlin-native-shared:$konanVersion")
+    implementation("com.github.jengelman.gradle.plugins:shadow:5.1.0")
 }
 
 sourceSets["main"].withConvention(KotlinSourceSet::class) {
@@ -63,11 +65,15 @@ gradlePlugin {
     plugins {
         create("benchmarkPlugin") {
             id = "benchmarking"
-            implementationClass = "org.jetbrains.kotlin.benchmark.BenchmarkingPlugin"
+            implementationClass = "org.jetbrains.kotlin.benchmark.KotlinNativeBenchmarkingPlugin"
         }
         create("compileBenchmarking") {
             id = "compile-benchmarking"
             implementationClass = "org.jetbrains.kotlin.benchmark.CompileBenchmarkingPlugin"
+        }
+        create("swiftBenchmarking") {
+            id = "swift-benchmarking"
+            implementationClass = "org.jetbrains.kotlin.benchmark.SwiftBenchmarkingPlugin"
         }
     }
 }

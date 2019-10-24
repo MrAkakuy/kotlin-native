@@ -11,19 +11,19 @@ import llvm.*
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.ClassGlobalHierarchyInfo
 import org.jetbrains.kotlin.backend.konan.llvm.objc.*
+import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.descriptors.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.util.*
-import org.jetbrains.kotlin.konan.target.*
 import org.jetbrains.kotlin.backend.konan.descriptors.resolveFakeOverride
 import org.jetbrains.kotlin.backend.konan.ir.*
-import org.jetbrains.kotlin.descriptors.konan.CompiledKonanModuleOrigin
+import org.jetbrains.kotlin.descriptors.konan.CompiledKlibModuleOrigin
 
 internal class CodeGenerator(override val context: Context) : ContextUtils {
 
-    fun llvmFunction(function: IrFunction): LLVMValueRef = llvmFunctionOrNull(function) ?: error("no function ${function.name} in ${function.file}")
+    fun llvmFunction(function: IrFunction): LLVMValueRef = llvmFunctionOrNull(function) ?: error("no function ${function.name} in ${function.file.fqName}")
     fun llvmFunctionOrNull(function: IrFunction): LLVMValueRef? = function.llvmFunctionOrNull
-    val intPtrType = LLVMIntPtrType(llvmTargetData)!!
+    val intPtrType = LLVMIntPtrTypeInContext(llvmContext, llvmTargetData)!!
     internal val immOneIntPtrType = LLVMConstInt(intPtrType, 1, 1)!!
     // Keep in sync with OBJECT_TAG_MASK in C++.
     internal val immTypeInfoMask = LLVMConstNot(LLVMConstInt(intPtrType, 3, 0)!!)!!
@@ -117,21 +117,35 @@ internal inline fun<R> generateFunction(codegen: CodeGenerator,
                                         function: IrFunction,
                                         startLocation: LocationInfo? = null,
                                         endLocation: LocationInfo? = null,
-                                        code:FunctionGenerationContext.(FunctionGenerationContext) -> R) {
+                                        code: FunctionGenerationContext.(FunctionGenerationContext) -> R) {
     val llvmFunction = codegen.llvmFunction(function)
 
-    generateFunctionBody(FunctionGenerationContext(
+    val functionGenerationContext = FunctionGenerationContext(
             llvmFunction,
             codegen,
             startLocation,
             endLocation,
-            function), code)
+            function)
+    try {
+        generateFunctionBody(functionGenerationContext, code)
+    } finally {
+        functionGenerationContext.dispose()
+    }
+
+    // To perform per-function validation.
+    if (false)
+        LLVMVerifyFunction(llvmFunction, LLVMVerifierFailureAction.LLVMAbortProcessAction)
 }
 
 
 internal inline fun<R> generateFunction(codegen: CodeGenerator, function: LLVMValueRef,
                                         code:FunctionGenerationContext.(FunctionGenerationContext) -> R) {
-    generateFunctionBody(FunctionGenerationContext(function, codegen, null, null), code)
+    val functionGenerationContext = FunctionGenerationContext(function, codegen, null, null)
+    try {
+        generateFunctionBody(functionGenerationContext, code)
+    } finally {
+        functionGenerationContext.dispose()
+    }
 }
 
 internal inline fun generateFunction(
@@ -214,14 +228,18 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
         }
     }
 
+    fun dispose() {
+        currentPositionHolder.dispose()
+    }
+
     private fun basicBlockInFunction(name: String, locationInfo: LocationInfo?): LLVMBasicBlockRef {
-        val bb = LLVMAppendBasicBlock(function, name)!!
+        val bb = LLVMAppendBasicBlockInContext(llvmContext, function, name)!!
         update(bb, locationInfo)
         return bb
     }
 
     fun basicBlock(name:String = "label_", startLocationInfo:LocationInfo?, endLocationInfo: LocationInfo? = startLocationInfo): LLVMBasicBlockRef {
-        val result = LLVMInsertBasicBlock(this.currentBlock, name)!!
+        val result = LLVMInsertBasicBlockInContext(llvmContext, this.currentBlock, name)!!
         update(result, startLocationInfo, endLocationInfo)
         LLVMMoveBasicBlockAfter(result, this.currentBlock)
         return result
@@ -926,7 +944,7 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
         }
     }
 
-    fun getObjCClass(binaryName: String, llvmSymbolOrigin: CompiledKonanModuleOrigin): LLVMValueRef {
+    fun getObjCClass(binaryName: String, llvmSymbolOrigin: CompiledKlibModuleOrigin): LLVMValueRef {
         context.llvm.imports.add(llvmSymbolOrigin)
         return load(codegen.objCDataGenerator!!.genClassRef(binaryName).llvm)
     }
@@ -969,7 +987,6 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
                 call(context.llvm.memsetFunction,
                         listOf(slotsMem, Int8(0).llvm,
                                 Int32(slotCount * codegen.runtime.pointerSize).llvm,
-                                Int32(codegen.runtime.pointerAlignment).llvm,
                                 Int1(0).llvm))
                 call(context.llvm.enterFrameFunction, listOf(slots, Int32(vars.skipSlots).llvm, Int32(slotCount).llvm))
             }
@@ -1073,7 +1090,7 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
      * This class is introduced to workaround unreachable code handling.
      */
     inner class PositionHolder {
-        private val builder: LLVMBuilderRef = LLVMCreateBuilder()!!
+        private val builder: LLVMBuilderRef = LLVMCreateBuilderInContext(llvmContext)!!
 
 
         fun getBuilder(): LLVMBuilderRef {

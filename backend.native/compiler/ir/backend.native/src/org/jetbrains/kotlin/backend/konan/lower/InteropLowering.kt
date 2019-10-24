@@ -233,7 +233,8 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
                 isInline = false,
                 isExternal = false,
                 isTailrec = false,
-                isSuspend = false
+                isSuspend = false,
+                isExpect = false
         ).also { result ->
             resultDescriptor.bind(result)
             result.parent = irClass
@@ -374,7 +375,8 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
                     isInline = false,
                     isExternal = false,
                     isTailrec = false,
-                    isSuspend = false
+                    isSuspend = false,
+                    isExpect = false
             ).apply {
                 it.bind(this)
             }
@@ -839,7 +841,7 @@ private class InteropTransformer(val context: Context, override val irFile: IrFi
         val function = expression.symbol.owner
 
         if (descriptor == interop.nativePointedRawPtrGetter ||
-                OverridingUtil.overrides(descriptor, interop.nativePointedRawPtrGetter)) {
+                OverridingUtil.overrides(descriptor, interop.nativePointedRawPtrGetter, false)) {
 
             // Replace by the intrinsic call to be handled by code generator:
             return builder.irCall(symbols.interopNativePointedGetRawPointer).apply {
