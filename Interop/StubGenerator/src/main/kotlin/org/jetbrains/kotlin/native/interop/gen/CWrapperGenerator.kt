@@ -4,10 +4,7 @@
  */
 package org.jetbrains.kotlin.native.interop.gen
 
-import org.jetbrains.kotlin.native.interop.indexer.FunctionDecl
-import org.jetbrains.kotlin.native.interop.indexer.GlobalDecl
-import org.jetbrains.kotlin.native.interop.indexer.VoidType
-import org.jetbrains.kotlin.native.interop.indexer.unwrapTypedefs
+import org.jetbrains.kotlin.native.interop.indexer.*
 
 internal data class CCalleeWrapper(val lines: List<String>)
 
@@ -23,12 +20,12 @@ internal class CWrappersGenerator(private val context: StubIrContext) {
             context.configuration.pkgName.replace(INVALID_CLANG_IDENTIFIER_REGEX, "_")
 
     private fun generateFunctionWrapperName(functionName: String): String {
-        return "${packageName}_${functionName}_wrapper${currentFunctionWrapperId++}"
+        val validFunctionName = functionName.replace(INVALID_CLANG_IDENTIFIER_REGEX, "_")
+        return "${packageName}_${validFunctionName}_wrapper${currentFunctionWrapperId++}"
     }
 
     private fun bindSymbolToFunction(symbol: String, function: String): List<String> = listOf(
-            "const void* $symbol __asm(${symbol.quoteAsKotlinLiteral()});",
-            "const void* $symbol = &$function;"
+            "const void* $symbol __asm(${symbol.quoteAsKotlinLiteral()}) = (const void*) &$function;"
     )
 
     private data class Parameter(val type: String, val name: String)
@@ -52,12 +49,31 @@ internal class CWrappersGenerator(private val context: StubIrContext) {
                 CCalleeWrapper(bindSymbolToFunction(symbolName, function.name))
             } else {
                 val wrapperName = generateFunctionWrapperName(function.name)
-
+                val owner = (function as? CxxClassFunctionDecl)?.owner
                 val returnType = function.returnType.getStringRepresentation()
-                val parameters = function.parameters.mapIndexed { index, parameter ->
+
+                val originParameters = if (owner != null && !function.isStatic)
+                    listOf(Parameter(
+                            "ptr",
+                            CxxClassPointerType(CxxClassType(owner)),
+                            false)
+                    ) + function.parameters
+                else
+                    function.parameters
+
+                val parameters = originParameters.mapIndexed { index, parameter ->
                     Parameter(parameter.type.getStringRepresentation(), "p$index")
                 }
-                val callExpression = "${function.name}(${parameters.joinToString { it.name }});"
+
+                val callExpression = when {
+                    owner != null -> {
+                        if (function.isStatic)
+                            "${owner.spelling}::${function.name}(${parameters.joinToString { it.name }});"
+                        else
+                            "(${parameters.first().name})->${function.name}(${parameters.drop(1).joinToString { it.name }});"
+                    }
+                    else -> "${function.name}(${parameters.joinToString { it.name }});"
+                }
                 val wrapperBody = if (function.returnType.unwrapTypedefs() is VoidType) {
                     callExpression
                 } else {

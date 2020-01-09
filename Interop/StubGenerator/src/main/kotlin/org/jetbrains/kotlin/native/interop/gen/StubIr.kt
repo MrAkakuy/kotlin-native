@@ -4,7 +4,6 @@
  */
 package org.jetbrains.kotlin.native.interop.gen
 
-import com.sun.org.apache.xpath.internal.operations.Bool
 import org.jetbrains.kotlin.native.interop.indexer.*
 
 interface StubIrElement {
@@ -74,10 +73,6 @@ class TypeArgumentStub(
         val type: StubType,
         val variance: TypeArgument.Variance = TypeArgument.Variance.INVARIANT
 ) : TypeArgument
-
-class ContextAllocationStubType : StubType() {
-    override val nullable: Boolean = false
-}
 
 /**
  * Represents a source of StubIr element.
@@ -283,7 +278,8 @@ class FunctionParameterStub(
         val type: StubType,
         override val annotations: List<AnnotationStub> = emptyList(),
         val isVararg: Boolean = false,
-        val origin: StubOrigin = StubOrigin.None
+        val origin: StubOrigin = StubOrigin.None,
+        val defaultValue: String? = null
 ) : AnnotationHolder
 
 enum class MemberStubModality {
@@ -327,7 +323,7 @@ sealed class PropertyAccessor : FunctionalStub {
             override val annotations: List<AnnotationStub> = emptyList()
         }
 
-        class CxxClassMemberAt(val offset: Long, pointedType: WrapperStubType) : Getter() {
+        class CxxClassMemberAt(val offset: Long, pointedType: StubType) : Getter() {
             override val annotations: List<AnnotationStub> = emptyList()
             val typeParameter: StubType = pointedType
         }
@@ -345,7 +341,7 @@ sealed class PropertyAccessor : FunctionalStub {
             val typeParameters: List<StubType> = listOf(pointedType)
         }
 
-        class InterpretCxxClassPointed(val cGlobalName:String, pointedType: WrapperStubType) : Getter() {
+        class InterpretCxxClassPointed(val cGlobalName:String, pointedType: StubType) : Getter() {
             override val annotations: List<AnnotationStub> = emptyList()
             val typeParameter: StubType = pointedType
         }

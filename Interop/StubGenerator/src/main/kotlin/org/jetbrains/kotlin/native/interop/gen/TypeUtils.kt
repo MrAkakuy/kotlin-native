@@ -34,13 +34,17 @@ fun Type.getStringRepresentation(): String = when (this) {
     VoidType -> "void"
     CharType -> "char"
     CBoolType -> "_Bool"
+    CxxBoolType -> "bool"
     ObjCBoolType -> "BOOL"
     is IntegerType -> this.spelling
     is FloatingType -> this.spelling
 
-    is PointerType -> getPointerTypeStringRepresentation(this.pointeeType)
-    is ArrayType -> getPointerTypeStringRepresentation(this.elemType)
-    is CxxClassPointerType -> getPointerTypeStringRepresentation(this.pointeeType)
+    is PointerType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
+    is ArrayType -> getPointerTypeStringRepresentation(this.elemType, this is ConstArrayType)
+    is CxxClassPointerType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
+    is CxxClassLValueRefType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
+
+    is LValueRefType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
 
     is RecordType -> this.decl.spelling
     is CxxClassType -> this.decl.spelling
@@ -64,8 +68,11 @@ fun Type.getStringRepresentation(): String = when (this) {
     else -> throw NotImplementedError()
 }
 
-fun getPointerTypeStringRepresentation(pointee: Type): String =
-        (getStringRepresentationOfPointee(pointee) ?: "void") + "*"
+fun getPointerTypeStringRepresentation(pointee: Type, pointeeIsConst: Boolean = false): String =
+        getStringRepresentationOfConst(pointeeIsConst) + (getStringRepresentationOfPointee(pointee) ?: "void") + "*"
+
+private fun getStringRepresentationOfConst(pointeeIsConst: Boolean): String =
+        if (pointeeIsConst) "const " else ""
 
 private fun getStringRepresentationOfPointee(type: Type): String? {
     val unwrapped = type.unwrapTypedefs()

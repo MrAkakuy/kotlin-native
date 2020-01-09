@@ -422,7 +422,8 @@ class StubIrTextEmitter(
         else
             parameter.annotations.joinToString(separator = " ") { renderAnnotation(it) } + " "
         val vararg = if (parameter.isVararg) "vararg " else ""
-        return "$annotations$vararg${parameter.name.asSimpleName()}: ${renderStubType(parameter.type)}"
+        val defaultValue = parameter.defaultValue?.let { "= $it" } ?: ""
+        return "$annotations$vararg${parameter.name.asSimpleName()}: ${renderStubType(parameter.type)}$defaultValue"
     }
 
     private fun renderMemberModality(modality: MemberStubModality, container: StubContainer?): String =

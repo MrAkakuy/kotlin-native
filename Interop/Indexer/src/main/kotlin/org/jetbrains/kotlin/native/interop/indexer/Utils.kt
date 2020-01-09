@@ -239,7 +239,7 @@ internal fun Appendable.appendPreamble(compilation: Compilation) = this.apply {
  */
 internal fun Compilation.createTempSource(): File {
     val result = createTempFile(suffix = ".${language.sourceFileExtension}")
-    result.deleteOnExit()
+    //result.deleteOnExit()
 
     result.bufferedWriter().use { writer ->
         writer.appendPreamble(this)
@@ -344,6 +344,10 @@ fun List<List<String>>.mapFragmentIsCompilable(originalLibrary: CompilationWithP
 
                 clang_reparseTranslationUnit(translationUnit, 0, null, 0)
                 val errorLineNumbers = translationUnit.getErrorLineNumbers().toSet()
+
+                translationUnit.getCompileErrors().forEach {
+                    println("Compile error: $it")
+                }
 
                 // Retain only those fragments that contain compilation error locations:
                 var lastLineNumber = library.preambleLines.size

@@ -31,10 +31,10 @@ class ClassifierStubType(
 /**
  * @return type from kotlinx.cinterop package
  */
-fun KotlinPlatform.getRuntimeType(name: String, nullable: Boolean = false): StubType {
+fun KotlinPlatform.getRuntimeType(name: String, nullable: Boolean = false, typeArguments: List<TypeArgument> = emptyList()): StubType {
     val classifier = Classifier.topLevel("kotlinx.cinterop", name)
     PredefinedTypesHandler.tryExpandPlatformDependentTypealias(classifier, this, nullable)?.let { return it }
-    return ClassifierStubType(classifier, nullable = nullable)
+    return ClassifierStubType(classifier, typeArguments = typeArguments, nullable = nullable)
 }
 
 /**
@@ -53,6 +53,10 @@ class TypeParameterType(
         val name: String,
         override val nullable: Boolean
 ) : StubType()
+
+class ContextAllocationStubType : StubType() {
+    override val nullable: Boolean = false
+}
 
 fun KotlinType.toStubIrType(): StubType = when (this) {
     is KotlinFunctionType -> this.toStubIrType()

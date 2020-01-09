@@ -337,16 +337,16 @@ internal class CxxClassStubBuilder(
                     }
                     val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.ArrayMemberAt(offset))
                     // TODO: Should receiver be added?
-                    PropertyStub(field.name, WrapperStubType(type), kind, annotations = annotations)
+                    PropertyStub(field.name, type.toStubIrType(), kind, annotations = annotations)
                 } else {
-                    val pointedType = WrapperStubType(fieldRefType.pointedType)
+                    val pointedType = fieldRefType.pointedType.toStubIrType()
                     val pointedTypeArgument = TypeArgumentStub(pointedType)
                     if (fieldRefType is TypeMirror.ByValue) {
                         val kind = PropertyStub.Kind.Var(
                                 PropertyAccessor.Getter.MemberAt(offset, typeArguments = listOf(pointedTypeArgument), hasValueAccessor = true),
                                 PropertyAccessor.Setter.MemberAt(offset, typeArguments = listOf(pointedTypeArgument))
                         )
-                        PropertyStub(field.name, WrapperStubType(fieldRefType.argType), kind)
+                        PropertyStub(field.name, fieldRefType.argType.toStubIrType(), kind)
                     } else if (unwrappedFieldType is CxxClassType) {
                         val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.CxxClassMemberAt(offset, pointedType))
                         PropertyStub(field.name, pointedType, kind)
@@ -368,10 +368,10 @@ internal class CxxClassStubBuilder(
             val readBits = PropertyAccessor.Getter.ReadBits(field.offset, field.size, signed)
             val writeBits = PropertyAccessor.Setter.WriteBits(field.offset, field.size)
             // TODO: Use something instead of [GlobalGetterBridgeInfo].
-            context.bridgeComponentsBuilder.getterToBridgeInfo[readBits] = BridgeGenerationComponents.GlobalGetterBridgeInfo("", typeInfo, false)
-            context.bridgeComponentsBuilder.setterToBridgeInfo[writeBits] = BridgeGenerationComponents.GlobalSetterBridgeInfo("", typeInfo)
+            context.bridgeComponentsBuilder.getterToBridgeInfo[readBits] = BridgeGenerationInfo("", typeInfo)
+            context.bridgeComponentsBuilder.setterToBridgeInfo[writeBits] = BridgeGenerationInfo("", typeInfo)
             val kind = PropertyStub.Kind.Var(readBits, writeBits)
-            PropertyStub(field.name, WrapperStubType(kotlinType), kind)
+            PropertyStub(field.name, kotlinType.toStubIrType(), kind)
         }
 
         val functions: List<FunctionStub> = def.functions.flatMap {
@@ -387,8 +387,12 @@ internal class CxxClassStubBuilder(
 
         val chainConstructor = ConstructorStub(
                 parameters = listOf(
-                        FunctionParameterStub("body", SymbolicStubType("CStructVar")),
-                        FunctionParameterStub("context", SymbolicStubType("NativePlacement? = null"))
+                        FunctionParameterStub("body", context.platform.getRuntimeType("CStructVar")),
+                        FunctionParameterStub(
+                                "context",
+                                context.platform.getRuntimeType("NativePlacement", nullable = true),
+                                defaultValue = "null"
+                        )
                 ),
                 annotations = listOf(AnnotationStub.PublishedApi()),
                 origin = StubOrigin.None,
@@ -399,10 +403,11 @@ internal class CxxClassStubBuilder(
         )
         val destructor = FunctionStub(
                 name = "destructor",
-                returnType = WrapperStubType(KotlinTypes.unit),
+                returnType = KotlinTypes.unit.toStubIrType(),
                 parameters = emptyList(),
                 origin = StubOrigin.Function(def.destructor),
-                annotations = emptyList(),
+                annotations = listOf(AnnotationStub.CCall.Symbol(context.generateNextUniqueId("knifunptr_") + "_destructor")),
+                external = true,
                 receiver = null,
                 modality = MemberStubModality.OVERRIDE
         )
@@ -412,7 +417,12 @@ internal class CxxClassStubBuilder(
                 FunctionStub(
                         name = "reinterpret",
                         returnType = ClassifierStubType(classifier),
-                        parameters = listOf(FunctionParameterStub("ptr", SymbolicStubType("CPointer<*>"))),
+                        parameters = listOf(
+                                FunctionParameterStub(
+                                        "ptr",
+                                        platform.getRuntimeType("CPointer", typeArguments = listOf(TypeArgument.StarProjection))
+                                )
+                        ),
                         origin = StubOrigin.None,
                         annotations = emptyList(),
                         receiver = null,
@@ -427,7 +437,7 @@ internal class CxxClassStubBuilder(
                 FunctionStub(
                         name = "reinterpret",
                         returnType = ClassifierStubType(classifier),
-                        parameters = listOf(FunctionParameterStub("ptd", SymbolicStubType("NativePointed"))),
+                        parameters = listOf(FunctionParameterStub("ptd", platform.getRuntimeType("NativePointed"))),
                         origin = StubOrigin.None,
                         annotations = emptyList(),
                         receiver = null,
@@ -437,15 +447,15 @@ internal class CxxClassStubBuilder(
             }
         }
 
-        val superClass = SymbolicStubType(
-                if (decl.bases.isEmpty())
-                    "CxxClass"
-                else
-                    context.getKotlinClassForPointed(decl.bases.first()).topLevelName
-        )
+        val cxxClassType = context.platform.getRuntimeType("CxxClass")
+        require(cxxClassType is ClassifierStubType)
 
-        // TODO: How we will differ Type and CStructVar.Type?
-        val companionSuper = SymbolicStubType("Type")
+        val superClass = if (decl.bases.isEmpty())
+            cxxClassType
+        else
+            ClassifierStubType(context.getKotlinClassForPointed(decl.bases.first()))
+
+        val companionSuper = (context.platform.getRuntimeType("CStructVar") as ClassifierStubType).nested("Type")
         val typeSize = listOf(IntegralConstantStub(def.size, 4, true), IntegralConstantStub(def.align.toLong(), 4, true))
         val companionSuperInit = SuperClassInit(companionSuper, typeSize)
         val companion = ClassStub.Companion(
@@ -497,8 +507,8 @@ internal class CxxClassStubBuilder(
     private fun generateForwardClass(c: CxxClassDecl): List<StubIrElement> = when (context.platform) {
         KotlinPlatform.JVM -> {
             val classifier = context.getKotlinClassForPointed(c)
-            val superClass = SymbolicStubType("COpaque")
-            val rawPtrConstructorParam = ConstructorParameterStub("rawPtr", SymbolicStubType("NativePtr"))
+            val superClass = context.platform.getRuntimeType("COpaque")
+            val rawPtrConstructorParam = ConstructorParameterStub("rawPtr", context.platform.getRuntimeType("NativePtr"))
             val superClassInit = SuperClassInit(superClass, listOf(GetConstructorParameter(rawPtrConstructorParam)))
             val origin = StubOrigin.CxxClass(c)
             listOf(ClassStub.Simple(
@@ -566,28 +576,16 @@ internal abstract class FunctionalStubBuilder(
             }
         }
 
-        val annotations: List<AnnotationStub>
-        val mustBeExternal: Boolean
-
-        if (platform == KotlinPlatform.JVM) {
-            annotations = emptyList()
-            mustBeExternal = false
-        } else {
-            if (isVararg) {
-                val type = KotlinTypes.any.makeNullable().toStubIrType()
-                parameters += FunctionParameterStub("variadicArguments", type, isVararg = true)
-            }
-            annotations = listOf(AnnotationStub.CCall.Symbol(context.generateNextUniqueId("knifunptr_") + "_$functionName"))
-            mustBeExternal = true
+        if (platform != KotlinPlatform.JVM && isVararg) {
+            val type = KotlinTypes.any.makeNullable().toStubIrType()
+            parameters += FunctionParameterStub("variadicArguments", type, isVararg = true)
         }
 
-        return build(parameters, annotations, mustBeExternal)
+        return build(parameters)
     }
 
 
-    protected abstract fun build(parameters: List<FunctionParameterStub>,
-                                 annotations: List<AnnotationStub>,
-                                 mustBeExternal: Boolean): List<StubIrElement>
+    protected abstract fun build(parameters: List<FunctionParameterStub>): List<StubIrElement>
 
 
     private fun representCFunctionParameterAsValuesRef(type: Type): KotlinType? {
@@ -648,7 +646,7 @@ internal class FunctionStubBuilder(
         override val context: StubsBuildingContext,
         private val func: FunctionDecl
 ) : FunctionalStubBuilder(context, func.parameters, func.name, func.isVararg) {
-    override fun build(parameters: List<FunctionParameterStub>, annotations: List<AnnotationStub>, mustBeExternal: Boolean): List<StubIrElement> {
+    override fun build(parameters: List<FunctionParameterStub>): List<StubIrElement> {
         val returnType = if (func.returnsVoid()) {
             KotlinTypes.unit
         } else {
@@ -666,18 +664,27 @@ internal class FunctionStubBuilder(
             }
         } else MemberStubModality.FINAL
 
+
+        val annotations: List<AnnotationStub>
+        val mustBeExternal: Boolean
+
+        if (context.platform == KotlinPlatform.JVM || modality == MemberStubModality.ABSTRACT) {
+            annotations = emptyList()
+            mustBeExternal = false
+        } else {
+            annotations = listOf(AnnotationStub.CCall.Symbol(context.generateNextUniqueId("knifunptr_") + "_${func.name}"))
+            mustBeExternal = true
+        }
+
         val functionStub = FunctionStub(
-                if (context.configuration.library.language == Language.CPP && func.name.contains('~'))
-                    "destructor"
-                else
-                    context.getKotlinName(func).topLevelName,
-                returnType,
-                parameters.toList(),
-                StubOrigin.Function(func),
-                annotations,
-                mustBeExternal,
-                null,
-                modality
+                name = context.getKotlinName(func).topLevelName,
+                returnType = returnType,
+                parameters = parameters.toList(),
+                origin = StubOrigin.Function(func),
+                annotations = annotations,
+                external = mustBeExternal,
+                receiver = null,
+                modality = modality
         )
         return listOf(functionStub)
     }
@@ -698,15 +705,15 @@ internal class ConstructorStubBuilder(
         override val context: StubsBuildingContext,
         private val constructor: CxxClassConstructorDecl,
         private val owner: Classifier
-) : FunctionalStubBuilder(context, constructor.parameters, "", constructor.isVararg) {
-    override fun build(parameters: List<FunctionParameterStub>, annotations: List<AnnotationStub>, mustBeExternal: Boolean): List<StubIrElement> {
+) : FunctionalStubBuilder(context, constructor.parameters, "constructor", constructor.isVararg) {
+    override fun build(parameters: List<FunctionParameterStub>): List<StubIrElement> {
         val constructorStub = ConstructorStub(
-                listOf(FunctionParameterStub("context", ContextAllocationStubType())) + parameters,
-                annotations,
-                StubOrigin.Constructor(constructor),
-                constructor.owner.isAbstract,
-                listOf(ContextAllocationStub()),
-                ConstructorStub.ChainCallType.SUPER
+                parameters = listOf(FunctionParameterStub("context", ContextAllocationStubType())) + parameters,
+                annotations = listOf(),
+                origin = StubOrigin.Constructor(constructor),
+                isDefault = constructor.owner.isAbstract,
+                chainCall = listOf(ContextAllocationStub()),
+                chainCallType = ConstructorStub.ChainCallType.SUPER
         )
         return listOf(constructorStub)
     }

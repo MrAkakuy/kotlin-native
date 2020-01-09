@@ -634,7 +634,11 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 spelling = clang_getTypeSpelling(type).convertAndDispose().dropConstQualifier()
         )
 
-        CXTypeKind.CXType_Bool -> CBoolType
+        CXTypeKind.CXType_Bool -> when(library.language) {
+            Language.C -> CBoolType
+            Language.CPP -> CxxBoolType
+            Language.OBJECTIVE_C -> ObjCBoolType
+        }
 
         else -> UnsupportedType
     }

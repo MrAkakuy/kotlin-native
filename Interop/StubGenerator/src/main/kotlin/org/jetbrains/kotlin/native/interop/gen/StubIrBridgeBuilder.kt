@@ -134,7 +134,6 @@ class StubIrBridgeBuilder(
         override fun visitConstructor(element: ConstructorStub, owner: StubContainer?) {
             try {
                 when {
-                    //element.external -> tryProcessCCallAnnotation(element)
                     element.isDefault -> { }
                     owner != null && owner.isInterface -> { }
                     else -> generateBridgeBody(element)
