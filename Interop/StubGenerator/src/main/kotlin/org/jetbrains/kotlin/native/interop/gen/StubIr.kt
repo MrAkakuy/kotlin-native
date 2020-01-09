@@ -6,6 +6,10 @@ package org.jetbrains.kotlin.native.interop.gen
 
 import org.jetbrains.kotlin.native.interop.indexer.*
 
+// TODO: Replace all usages of these strings with constants.
+const val cinteropPackage = "kotlinx.cinterop"
+const val cinteropInternalPackage = "$cinteropPackage.internal"
+
 interface StubIrElement {
     fun <T, R> accept(visitor: StubIrVisitor<T, R>, data: T): R
 }
@@ -55,12 +59,15 @@ class TypeParameterStub(
         val upperBound: StubType? = null
 ) {
     fun getStubType(nullable: Boolean) =
-            TypeParameterType(name, nullable = nullable)
+            TypeParameterType(name, nullable = nullable, typeParameterDeclaration = this)
 
 }
 
 interface TypeArgument {
-    object StarProjection : TypeArgument
+    object StarProjection : TypeArgument {
+        override fun toString(): String =
+                "*"
+    }
 
     enum class Variance {
         INVARIANT,
@@ -72,7 +79,10 @@ interface TypeArgument {
 class TypeArgumentStub(
         val type: StubType,
         val variance: TypeArgument.Variance = TypeArgument.Variance.INVARIANT
-) : TypeArgument
+) : TypeArgument {
+    override fun toString(): String =
+            type.toString()
+}
 
 /**
  * Represents a source of StubIr element.
@@ -81,28 +91,54 @@ sealed class StubOrigin {
     /**
      * Special case when element of IR was generated.
      */
-    object None : StubOrigin()
+    // TODO: All "synthetic" cases should be handled separately.
+    object Synthetic : StubOrigin()
+
+    /**
+     * Denotes default constructor that was generated and has no real origin.
+     */
+    object SyntheticDefaultConstructor : StubOrigin()
+
+    class ObjCCategoryInitMethod(
+            val method: org.jetbrains.kotlin.native.interop.indexer.ObjCMethod
+    ) : StubOrigin()
 
     class ObjCMethod(
             val method: org.jetbrains.kotlin.native.interop.indexer.ObjCMethod,
             val container: ObjCContainer
     ) : StubOrigin()
 
+    class ObjCProperty(
+            val property: org.jetbrains.kotlin.native.interop.indexer.ObjCProperty,
+            val container: ObjCContainer
+    ) : StubOrigin()
+
     class ObjCClass(
-            val clazz: org.jetbrains.kotlin.native.interop.indexer.ObjCClass
+            val clazz: org.jetbrains.kotlin.native.interop.indexer.ObjCClass,
+            val isMeta: Boolean
     ) : StubOrigin()
 
     class ObjCProtocol(
-            val protocol: org.jetbrains.kotlin.native.interop.indexer.ObjCProtocol
+            val protocol: org.jetbrains.kotlin.native.interop.indexer.ObjCProtocol,
+            val isMeta: Boolean
     ) : StubOrigin()
 
     class Enum(val enum: EnumDef) : StubOrigin()
 
     class Function(val function: FunctionDecl) : StubOrigin()
 
+    // TODO: Unused, remove.
     class FunctionParameter(val parameter: Parameter) : StubOrigin()
 
     class Struct(val struct: StructDecl) : StubOrigin()
+
+    class Constant(val constantDef: ConstantDef): StubOrigin()
+
+    class Global(val global: GlobalDecl) : StubOrigin()
+
+    class TypeDef(val typedefDef: TypedefDef) : StubOrigin()
+
+    class VarOf(val typeOrigin: StubOrigin) : StubOrigin()
 }
 
 interface StubElementWithOrigin : StubIrElement {
@@ -113,29 +149,52 @@ interface AnnotationHolder {
     val annotations: List<AnnotationStub>
 }
 
-sealed class AnnotationStub {
-    sealed class ObjC : AnnotationStub() {
-        object ConsumesReceiver : ObjC()
-        object ReturnsRetained : ObjC()
-        class Method(val selector: String, val encoding: String, val isStret: Boolean = false) : ObjC()
-        class Factory(val selector: String, val encoding: String, val isStret: Boolean = false) : ObjC()
-        object Consumed : ObjC()
-        class Constructor(val selector: String, val designated: Boolean) : ObjC()
-        class ExternalClass(val protocolGetter: String = "", val binaryName: String = "") : ObjC()
+sealed class AnnotationStub(val classifier: Classifier) {
+
+    sealed class ObjC(classifier: Classifier) : AnnotationStub(classifier) {
+        object ConsumesReceiver :
+                ObjC(cCallClassifier.nested("ConsumesReceiver"))
+
+        object ReturnsRetained :
+                ObjC(cCallClassifier.nested("ReturnsRetained"))
+
+        class Method(val selector: String, val encoding: String, val isStret: Boolean = false) :
+                ObjC(Classifier.topLevel(cinteropPackage, "ObjCMethod"))
+
+        class Factory(val selector: String, val encoding: String, val isStret: Boolean = false) :
+                ObjC(Classifier.topLevel(cinteropPackage, "ObjCFactory"))
+
+        object Consumed :
+                ObjC(cCallClassifier.nested("Consumed"))
+
+        class Constructor(val selector: String, val designated: Boolean) :
+                ObjC(Classifier.topLevel(cinteropPackage, "ObjCConstructor"))
+
+        class ExternalClass(val protocolGetter: String = "", val binaryName: String = "") :
+                ObjC(Classifier.topLevel(cinteropPackage, "ExternalObjCClass"))
     }
 
-    sealed class CCall : AnnotationStub() {
-        object CString : CCall()
-        object WCString : CCall()
-        class Symbol(val symbolName: String) : CCall()
+    sealed class CCall(classifier: Classifier) : AnnotationStub(classifier) {
+        object CString : CCall(cCallClassifier.nested("CString"))
+        object WCString : CCall(cCallClassifier.nested("WCString"))
+        class Symbol(val symbolName: String) : CCall(cCallClassifier)
     }
 
-    class CStruct(val struct: String) : AnnotationStub()
-    class CNaturalStruct(val members: List<StructMember>) : AnnotationStub()
+    class CStruct(val struct: String) :
+            AnnotationStub(Classifier.topLevel(cinteropInternalPackage, "CStruct"))
 
-    class CLength(val length: Long) : AnnotationStub()
+    class CNaturalStruct(val members: List<StructMember>) :
+            AnnotationStub(Classifier.topLevel(cinteropPackage, "CNaturalStruct"))
 
-    class Deprecated(val message: String, val replaceWith: String) : AnnotationStub()
+    class CLength(val length: Long) :
+            AnnotationStub(Classifier.topLevel(cinteropPackage, "CLength"))
+
+    class Deprecated(val message: String, val replaceWith: String) :
+            AnnotationStub(Classifier.topLevel("kotlin", "Deprecated"))
+
+    private companion object {
+        val cCallClassifier = Classifier.topLevel(cinteropInternalPackage, "CCall")
+    }
 }
 
 /**
@@ -153,7 +212,8 @@ class PropertyStub(
         val kind: Kind,
         val modality: MemberStubModality = MemberStubModality.FINAL,
         val receiverType: StubType? = null,
-        override val annotations: List<AnnotationStub> = emptyList()
+        override val annotations: List<AnnotationStub> = emptyList(),
+        val origin: StubOrigin
 ) : StubIrElement, AnnotationHolder {
     sealed class Kind {
         class Val(
@@ -181,16 +241,8 @@ enum class VisibilityModifier {
     PRIVATE, PROTECTED, INTERNAL, PUBLIC
 }
 
-class ConstructorParameterStub(val name: String, val type: StubType, val qualifier: Qualifier = Qualifier.NONE) {
-    sealed class Qualifier {
-        class VAL(val overrides: Boolean) : Qualifier()
-        class VAR(val overrides: Boolean) : Qualifier()
-        object NONE : Qualifier()
-    }
-}
-
 class GetConstructorParameter(
-        val constructorParameterStub: ConstructorParameterStub
+        val constructorParameterStub: FunctionParameterStub
 ) : ValueStub()
 
 class SuperClassInit(
@@ -198,17 +250,20 @@ class SuperClassInit(
         val arguments: List<ValueStub> = listOf()
 )
 
+// TODO: Consider unifying these classes.
 sealed class ClassStub : StubContainer(), StubElementWithOrigin, AnnotationHolder {
 
     abstract val superClassInit: SuperClassInit?
     abstract val interfaces: List<StubType>
     abstract val childrenClasses: List<ClassStub>
     abstract val companion : Companion?
+    abstract val classifier: Classifier
 
     class Simple(
-            val classifier: Classifier,
+            override val classifier: Classifier,
             val modality: ClassStubModality,
-            val constructorParameters: List<ConstructorParameterStub> = emptyList(),
+            constructors: List<ConstructorStub> = emptyList(),
+            methods: List<FunctionStub> = emptyList(),
             override val superClassInit: SuperClassInit? = null,
             override val interfaces: List<StubType> = emptyList(),
             override val properties: List<PropertyStub> = emptyList(),
@@ -216,27 +271,31 @@ sealed class ClassStub : StubContainer(), StubElementWithOrigin, AnnotationHolde
             override val annotations: List<AnnotationStub> = emptyList(),
             override val childrenClasses: List<ClassStub> = emptyList(),
             override val companion: Companion? = null,
-            override val functions: List<FunctionalStub> = emptyList(),
             override val simpleContainers: List<SimpleStubContainer> = emptyList()
-    ) : ClassStub()
+    ) : ClassStub() {
+        override val functions: List<FunctionalStub> = constructors + methods
+    }
 
     class Companion(
+            override val classifier: Classifier,
+            methods: List<FunctionStub> = emptyList(),
             override val superClassInit: SuperClassInit? = null,
             override val interfaces: List<StubType> = emptyList(),
             override val properties: List<PropertyStub> = emptyList(),
-            override val origin: StubOrigin = StubOrigin.None,
+            override val origin: StubOrigin = StubOrigin.Synthetic,
             override val annotations: List<AnnotationStub> = emptyList(),
             override val childrenClasses: List<ClassStub> = emptyList(),
-            override val functions: List<FunctionalStub> = emptyList(),
             override val simpleContainers: List<SimpleStubContainer> = emptyList()
     ) : ClassStub() {
         override val companion: Companion? = null
+
+        override val functions: List<FunctionalStub> = methods
     }
 
     class Enum(
-            val classifier: Classifier,
+            override val classifier: Classifier,
             val entries: List<EnumEntryStub>,
-            val constructorParameters: List<ConstructorParameterStub> = emptyList(),
+            constructors: List<ConstructorStub>,
             override val superClassInit: SuperClassInit? = null,
             override val interfaces: List<StubType> = emptyList(),
             override val properties: List<PropertyStub> = emptyList(),
@@ -244,9 +303,10 @@ sealed class ClassStub : StubContainer(), StubElementWithOrigin, AnnotationHolde
             override val annotations: List<AnnotationStub> = emptyList(),
             override val childrenClasses: List<ClassStub> = emptyList(),
             override val companion: Companion?= null,
-            override val functions: List<FunctionalStub> = emptyList(),
             override val simpleContainers: List<SimpleStubContainer> = emptyList()
-    ) : ClassStub()
+    ) : ClassStub() {
+        override val functions: List<FunctionalStub> = constructors
+    }
 
     override val meta: StubContainerMeta = StubContainerMeta()
 
@@ -268,13 +328,14 @@ class FunctionParameterStub(
         val type: StubType,
         override val annotations: List<AnnotationStub> = emptyList(),
         val isVararg: Boolean = false,
-        val origin: StubOrigin = StubOrigin.None
+        val origin: StubOrigin = StubOrigin.Synthetic
 ) : AnnotationHolder
 
 enum class MemberStubModality {
     OVERRIDE,
     OPEN,
-    FINAL
+    FINAL,
+    ABSTRACT
 }
 
 interface FunctionalStub : AnnotationHolder, StubIrElement, NativeBacked {
@@ -290,6 +351,11 @@ sealed class PropertyAccessor : FunctionalStub {
         class SimpleGetter(
                 override val annotations: List<AnnotationStub> = emptyList(),
                 val constant: ConstantStub? = null
+        ) : Getter()
+
+        class GetConstructorParameter(
+                val constructorParameter: FunctionParameterStub,
+                override val annotations: List<AnnotationStub> = emptyList()
         ) : Getter()
 
         class ExternalGetter(
@@ -373,9 +439,11 @@ class FunctionStub(
 
 // TODO: should we support non-trivial constructors?
 class ConstructorStub(
-        override val parameters: List<FunctionParameterStub>,
-        override val annotations: List<AnnotationStub>,
-        val visibility: VisibilityModifier = VisibilityModifier.PUBLIC
+        override val parameters: List<FunctionParameterStub> = emptyList(),
+        override val annotations: List<AnnotationStub> = emptyList(),
+        val isPrimary: Boolean,
+        val visibility: VisibilityModifier = VisibilityModifier.PUBLIC,
+        val origin: StubOrigin
 ) : FunctionalStub {
 
     override fun <T, R> accept(visitor: StubIrVisitor<T, R>, data: T) =
@@ -392,7 +460,8 @@ class EnumEntryStub(
 
 class TypealiasStub(
         val alias: Classifier,
-        val aliasee: StubType
+        val aliasee: StubType,
+        val origin: StubOrigin
 ) : StubIrElement {
 
     override fun <T, R> accept(visitor: StubIrVisitor<T, R>, data: T) =

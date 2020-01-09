@@ -1,7 +1,5 @@
 package org.jetbrains.kotlin.backend.konan.lower
 
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedVariableDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.common.ir.isSuspend
 import org.jetbrains.kotlin.backend.common.ir.simpleFunctions
@@ -16,6 +14,8 @@ import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.IrFunctionImpl
 import org.jetbrains.kotlin.ir.declarations.impl.IrVariableImpl
+import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.ir.descriptors.WrappedVariableDescriptor
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.IrGetValueImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrSetVariableImpl
@@ -338,11 +338,12 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                         suspendCall = newChildren[2]
                     }
                     expression.isSuspendCall -> {
-                        val lastChild = newChildren.last()
-                        if (lastChild != null) {
+                        val lastChildIndex = newChildren.indexOfLast { it != null }
+                        if (lastChildIndex != -1) {
                             // Save state as late as possible.
+                            val lastChild = newChildren[lastChildIndex]!!
                             calledSaveState = true
-                            newChildren[numberOfChildren - 1] =
+                            newChildren[lastChildIndex] =
                                     irBlock(lastChild) {
                                         if (lastChild.isPure()) {
                                             +irCall(saveState)
@@ -487,7 +488,9 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                 isExternal = false,
                 isTailrec = false,
                 isSuspend = false,
-                isExpect = false
+                isExpect = false,
+                isFakeOverride = false,
+                isOperator = false
         ).apply {
             it.bind(this)
         }
@@ -506,7 +509,9 @@ internal class NativeSuspendFunctionsLowering(ctx: Context): AbstractSuspendFunc
                 isExternal = false,
                 isTailrec = false,
                 isSuspend = false,
-                isExpect = false
+                isExpect = false,
+                isFakeOverride = false,
+                isOperator = false
         ).apply {
             it.bind(this)
         }

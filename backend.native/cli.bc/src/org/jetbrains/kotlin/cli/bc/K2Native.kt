@@ -22,7 +22,7 @@ import org.jetbrains.kotlin.config.CommonConfigurationKeys
 import org.jetbrains.kotlin.config.CompilerConfiguration
 import org.jetbrains.kotlin.config.Services
 import org.jetbrains.kotlin.konan.CURRENT
-import org.jetbrains.kotlin.konan.KonanVersion
+import org.jetbrains.kotlin.konan.CompilerVersion
 import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.metadata.deserialization.BinaryVersion
@@ -47,7 +47,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                            @Nullable paths: KotlinPaths?): ExitCode {
 
         if (arguments.version) {
-            println("Kotlin/Native: ${KonanVersion.CURRENT}")
+            println("Kotlin/Native: ${CompilerVersion.CURRENT}")
             return ExitCode.OK
         }
 
@@ -82,7 +82,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 |Compilation failed: ${e.message}
 
                 | * Source files: ${environment.getSourceFiles().joinToString(transform = KtFile::getName)}
-                | * Compiler version info: Konan: ${KonanVersion.CURRENT} / Kotlin: ${KotlinVersion.CURRENT}
+                | * Compiler version info: Konan: ${CompilerVersion.CURRENT} / Kotlin: ${KotlinVersion.CURRENT}
                 | * Output kind: ${configuration.get(KonanConfigKeys.PRODUCE)}
 
                 """.trimMargin())
@@ -94,7 +94,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
 
     val K2NativeCompilerArguments.isUsefulWithoutFreeArgs: Boolean
         get() = listTargets || listPhases || checkDependencies || !includes.isNullOrEmpty() ||
-                !librariesToCache.isNullOrEmpty()
+                !librariesToCache.isNullOrEmpty() || libraryToAddToCache != null
 
     fun Array<String>?.toNonNullList(): List<String> {
         return this?.asList<String>() ?: listOf<String>()
@@ -114,9 +114,9 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
         with(KonanConfigKeys) {
             with(configuration) {
 
-                put(NODEFAULTLIBS, arguments.nodefaultlibs)
-                put(NOENDORSEDLIBS, arguments.noendorsedlibs)
-                put(NOSTDLIB, arguments.nostdlib)
+                put(NODEFAULTLIBS, arguments.nodefaultlibs || !arguments.libraryToAddToCache.isNullOrEmpty())
+                put(NOENDORSEDLIBS, arguments.noendorsedlibs || !arguments.libraryToAddToCache.isNullOrEmpty())
+                put(NOSTDLIB, arguments.nostdlib || !arguments.libraryToAddToCache.isNullOrEmpty())
                 put(NOPACK, arguments.nopack)
                 put(NOMAIN, arguments.nomain)
                 put(LIBRARY_FILES,
@@ -140,6 +140,8 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 val outputKind = CompilerOutputKind.valueOf(
                     (arguments.produce ?: "program").toUpperCase())
                 put(PRODUCE, outputKind)
+                put(METADATA_KLIB, arguments.metadataKlib)
+
                 arguments.libraryVersion ?. let { put(LIBRARY_VERSION, it) }
 
                 arguments.mainPackage ?.let{ put(ENTRY, it) }
@@ -152,6 +154,8 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(DEBUG, arguments.debug)
                 put(LIGHT_DEBUG, arguments.lightDebug)
                 put(STATIC_FRAMEWORK, selectFrameworkType(configuration, arguments, outputKind))
+                put(OVERRIDE_CLANG_OPTIONS, arguments.clangOptions.toNonNullList())
+                put(ALLOCATION_MODE, arguments.allocator)
 
                 put(PRINT_IR, arguments.printIr)
                 put(PRINT_IR_WITH_DESCRIPTORS, arguments.printIrWithDescriptors)
@@ -217,7 +221,12 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(OBJC_GENERICS, arguments.objcGenerics)
 
                 put(LIBRARIES_TO_CACHE, parseLibrariesToCache(arguments, configuration, outputKind))
-                put(CACHE_DIRECTORIES, arguments.cacheDirectories.toNonNullList())
+                val libraryToAddToCache = parseLibraryToAddToCache(arguments, configuration, outputKind)
+                if (libraryToAddToCache != null && !arguments.outputName.isNullOrEmpty())
+                    configuration.report(ERROR, "$ADD_CACHE already implicitly sets output file name")
+                val cacheDirectories = arguments.cacheDirectories.toNonNullList()
+                libraryToAddToCache?.let { put(LIBRARY_TO_ADD_TO_CACHE, it) }
+                put(CACHE_DIRECTORIES, cacheDirectories)
                 put(CACHED_LIBRARIES, parseCachedLibraries(arguments, configuration))
             }
         }
@@ -341,6 +350,24 @@ private fun parseLibrariesToCache(
     return if (input.isNotEmpty() && !outputKind.isCache) {
         configuration.report(ERROR, "$MAKE_CACHE can't be used when not producing cache")
         emptyList()
+    } else if (input.isNotEmpty() && !arguments.libraryToAddToCache.isNullOrEmpty()) {
+        configuration.report(ERROR, "supplied both $MAKE_CACHE and $ADD_CACHE options")
+        emptyList()
+    } else {
+        input
+    }
+}
+
+private fun parseLibraryToAddToCache(
+        arguments: K2NativeCompilerArguments,
+        configuration: CompilerConfiguration,
+        outputKind: CompilerOutputKind
+): String? {
+    val input = arguments.libraryToAddToCache
+
+    return if (input != null && !outputKind.isCache) {
+        configuration.report(ERROR, "$ADD_CACHE can't be used when not producing cache")
+        null
     } else {
         input
     }

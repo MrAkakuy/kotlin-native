@@ -29,6 +29,9 @@ val Project.testTarget
 val Project.verboseTest
     get() = hasProperty("test_verbose")
 
+val Project.testOutputRoot
+    get() = findProperty("testOutputRoot") as String
+
 val Project.testOutputLocal
     get() = (findProperty("testOutputLocal") as File).toString()
 
@@ -38,6 +41,10 @@ val Project.testOutputStdlib
 val Project.testOutputFramework
     get() = (findProperty("testOutputFramework") as File).toString()
 
+val Project.kotlinNativeDist
+    get() = this.rootProject.file(this.findProperty("org.jetbrains.kotlin.native.home")
+            ?: this.findProperty("konan.home") ?: "dist")
+
 @Suppress("UNCHECKED_CAST")
 val Project.globalTestArgs: List<String>
     get() = with(findProperty("globalTestArgs")) {
@@ -45,14 +52,10 @@ val Project.globalTestArgs: List<String>
             else this as List<String>
     }
 
+val Project.testTargetSupportsCodeCoverage: Boolean
+    get() = this.testTarget.supportsCodeCoverage()
+
 //endregion
-
-
-fun Project.platformManager() = findProperty("platformManager") as PlatformManager
-fun Project.testTarget() = findProperty("target") as KonanTarget
-
-fun Project.testTargetSupportsCodeCoverage(): Boolean =
-        this.testTarget.supportsCodeCoverage()
 
 /**
  * Ad-hoc signing of the specified path.
@@ -135,7 +138,7 @@ fun Array<String>.runCommand(workingDir: File = File("."),
                 .start().apply {
                     waitFor(timeoutAmount, timeoutUnit)
                 }.inputStream.bufferedReader().readText()
-    } catch (e: IOException) {
+    } catch (e: Exception) {
         error("Couldn't run command $this")
     }
 }
@@ -207,16 +210,16 @@ fun getBuildProperty(buildJsonDescription: String, property: String) =
 @JvmOverloads
 fun compileSwift(project: Project, target: KonanTarget, sources: List<String>, options: List<String>,
                  output: Path, fullBitcode: Boolean = false) {
-    val platform = project.platformManager().platform(target)
+    val platform = project.platformManager.platform(target)
     assert(platform.configurables is AppleConfigurables)
     val configs = platform.configurables as AppleConfigurables
     val compiler = configs.absoluteTargetToolchain + "/usr/bin/swiftc"
 
     val swiftTarget = when (target) {
         KonanTarget.IOS_X64   -> "x86_64-apple-ios" + configs.osVersionMin
-        KonanTarget.IOS_ARM64 -> "arm64_64-apple-ios" + configs.osVersionMin
+        KonanTarget.IOS_ARM64 -> "arm64-apple-ios" + configs.osVersionMin
         KonanTarget.TVOS_X64   -> "x86_64-apple-tvos" + configs.osVersionMin
-        KonanTarget.TVOS_ARM64 -> "arm64_64-apple-tvos" + configs.osVersionMin
+        KonanTarget.TVOS_ARM64 -> "arm64-apple-tvos" + configs.osVersionMin
         KonanTarget.MACOS_X64 -> "x86_64-apple-macosx" + configs.osVersionMin
         KonanTarget.WATCHOS_X86 -> "i386-apple-watchos" + configs.osVersionMin
         KonanTarget.WATCHOS_X64 -> "x86_64-apple-watchos" + configs.osVersionMin
@@ -238,3 +241,6 @@ fun compileSwift(project: Project, target: KonanTarget, sources: List<String>, o
     check(exitCode == 0, { "Compilation failed" })
     check(output.toFile().exists(), { "Compiler swiftc hasn't produced an output file: $output" })
 }
+
+fun targetSupportsMimallocAllocator(targetName: String) =
+        HostManager().targetByName(targetName).supportsMimallocAllocator()

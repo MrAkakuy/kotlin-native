@@ -28,6 +28,9 @@ fun run() {
     testInitWithCustomSelector()
     testAllocNoRetain()
     testNSOutputStreamToMemoryConstructor()
+    testExportObjCClass()
+    testCustomString()
+    testLocalizedStrings()
 
     assertEquals(2, ForwardDeclaredEnum.TWO.value)
 
@@ -438,6 +441,48 @@ fun testNSOutputStreamToMemoryConstructor() {
     val stream: Any = NSOutputStream(toMemory = Unit)
     assertTrue(stream is NSOutputStream)
 }
+
+private const val TestExportObjCClass1Name = "TestExportObjCClass"
+@ExportObjCClass(TestExportObjCClass1Name) class TestExportObjCClass1 : NSObject()
+
+@ExportObjCClass class TestExportObjCClass2 : NSObject()
+
+const val TestExportObjCClass34Name = "TestExportObjCClass34"
+@ExportObjCClass(TestExportObjCClass34Name) class TestExportObjCClass3 : NSObject()
+@ExportObjCClass(TestExportObjCClass34Name) class TestExportObjCClass4 : NSObject()
+
+fun testExportObjCClass() {
+    assertEquals(TestExportObjCClass1Name, TestExportObjCClass1().objCClassName)
+    assertEquals("TestExportObjCClass2", TestExportObjCClass2().objCClassName)
+
+    assertTrue((TestExportObjCClass3().objCClassName == TestExportObjCClass34Name)
+            xor (TestExportObjCClass4().objCClassName == TestExportObjCClass34Name))
+}
+
+fun testCustomString() {
+    assertFalse(customStringDeallocated)
+
+    fun test() = autoreleasepool {
+        val str: String = createCustomString(321)
+        assertEquals("321", str)
+        assertEquals("CustomString", str.objCClassName)
+        assertEquals(321, getCustomStringValue(str))
+    }
+
+    test()
+    kotlin.native.internal.GC.collect()
+    assertTrue(customStringDeallocated)
+}
+
+fun testLocalizedStrings() {
+    val key = "screen_main_plural_string"
+    val localizedString = NSBundle.mainBundle.localizedStringForKey(key, value = "", table = "Localizable")
+    val string = NSString.localizedStringWithFormat(localizedString, 5)
+    assertEquals("Plural: 5 apples", string)
+}
+
+private val Any.objCClassName: String
+    get() = object_getClassName(this)!!.toKString()
 
 fun nsArrayOf(vararg elements: Any): NSArray = NSMutableArray().apply {
     elements.forEach {

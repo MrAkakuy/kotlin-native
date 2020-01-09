@@ -225,14 +225,15 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
             }
 
             override fun visitField(declaration: IrField) {
-                declaration.initializer?.let {
-                    DEBUG_OUTPUT(0) {
-                        println("Analysing global field ${declaration.descriptor}")
-                        println("IR: ${ir2stringWhole(declaration)}")
+                if (declaration.parent is IrFile)
+                    declaration.initializer?.let {
+                        DEBUG_OUTPUT(0) {
+                            println("Analysing global field ${declaration.descriptor}")
+                            println("IR: ${ir2stringWhole(declaration)}")
+                        }
+                        analyze(declaration, IrSetFieldImpl(it.startOffset, it.endOffset, declaration.symbol, null,
+                                it.expression, context.irBuiltIns.unitType))
                     }
-                    analyze(declaration, IrSetFieldImpl(it.startOffset, it.endOffset, declaration.symbol, null,
-                            it.expression, context.irBuiltIns.unitType))
-                }
             }
 
             private fun analyze(declaration: IrDeclaration, body: IrElement?) {
@@ -404,8 +405,8 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
     private val getContinuationSymbol = symbols.getContinuation
     private val continuationType = getContinuationSymbol.owner.returnType
 
-    private val arrayGetSymbol = symbols.arrayGet[symbols.array]
-    private val arraySetSymbol = symbols.arraySet[symbols.array]
+    private val arrayGetSymbols = symbols.arrayGet.values
+    private val arraySetSymbols = symbols.arraySet.values
     private val createUninitializedInstanceSymbol = symbols.createUninitializedInstance
     private val initInstanceSymbol = symbols.initInstance
     private val executeImplSymbol = symbols.executeImpl
@@ -574,7 +575,7 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                 if (value.value == null)
                                     DataFlowIR.Node.Null
                                 else
-                                    DataFlowIR.Node.Const(symbolTable.mapType(value.type))
+                                    DataFlowIR.Node.SimpleConst(symbolTable.mapType(value.type), value.value!!)
 
                             is IrGetObjectValue -> DataFlowIR.Node.Singleton(
                                     symbolTable.mapType(value.type),
@@ -597,17 +598,30 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                             is IrCall -> when (value.symbol) {
                                 getContinuationSymbol -> getContinuation()
 
-                                arrayGetSymbol -> DataFlowIR.Node.ArrayRead(
-                                        array = expressionToEdge(value.dispatchReceiver!!),
-                                        index = expressionToEdge(value.getValueArgument(0)!!),
-                                        type = mapReturnType(value.type, context.irBuiltIns.anyType),
-                                        irCallSite = value)
+                                in arrayGetSymbols -> {
+                                    val callee = value.symbol.owner
+                                    val actualCallee = (value.superQualifierSymbol?.owner?.getOverridingOf(callee)
+                                            ?: callee).target
 
-                                arraySetSymbol -> DataFlowIR.Node.ArrayWrite(
-                                        array = expressionToEdge(value.dispatchReceiver!!),
-                                        index = expressionToEdge(value.getValueArgument(0)!!),
-                                        value = expressionToEdge(value.getValueArgument(1)!!),
-                                        type = mapReturnType(value.getValueArgument(1)!!.type, context.irBuiltIns.anyType))
+                                    DataFlowIR.Node.ArrayRead(
+                                            symbolTable.mapFunction(actualCallee),
+                                            array = expressionToEdge(value.dispatchReceiver!!),
+                                            index = expressionToEdge(value.getValueArgument(0)!!),
+                                            type = mapReturnType(value.type, context.irBuiltIns.anyType),
+                                            irCallSite = value)
+                                }
+
+                                in arraySetSymbols -> {
+                                    val callee = value.symbol.owner
+                                    val actualCallee = (value.superQualifierSymbol?.owner?.getOverridingOf(callee)
+                                            ?: callee).target
+                                    DataFlowIR.Node.ArrayWrite(
+                                            symbolTable.mapFunction(actualCallee),
+                                            array = expressionToEdge(value.dispatchReceiver!!),
+                                            index = expressionToEdge(value.getValueArgument(0)!!),
+                                            value = expressionToEdge(value.getValueArgument(1)!!),
+                                            type = mapReturnType(value.getValueArgument(1)!!.type, context.irBuiltIns.anyType))
+                                }
 
                                 createUninitializedInstanceSymbol ->
                                     DataFlowIR.Node.AllocInstance(symbolTable.mapClassReferenceType(
@@ -644,7 +658,7 @@ internal class ModuleDFGBuilder(val context: Context, val irModule: IrModuleFrag
                                         error("Constructor call should be done with IrConstructorCall")
                                     } else {
                                         callee as IrSimpleFunction
-                                        if (callee.isOverridable && value.superQualifier == null) {
+                                        if (callee.isOverridable && value.superQualifierSymbol == null) {
                                             val owner = callee.parentAsClass
                                             val actualReceiverType = value.dispatchReceiver!!.type
                                             val actualReceiverClassifier = actualReceiverType.classifierOrFail

@@ -11,6 +11,7 @@ import org.jetbrains.kotlin.name.Name
 
 internal const val NATIVE_PTR_NAME = "NativePtr"
 internal const val NON_NULL_NATIVE_PTR_NAME = "NonNullNativePtr"
+internal const val VECTOR128 = "Vector128"
 
 object KonanFqNames {
     val function = FqName("kotlin.Function")
@@ -19,10 +20,13 @@ object KonanFqNames {
     val internalPackageName = FqName("kotlin.native.internal")
     val nativePtr = internalPackageName.child(Name.identifier(NATIVE_PTR_NAME)).toUnsafe()
     val nonNullNativePtr = internalPackageName.child(Name.identifier(NON_NULL_NATIVE_PTR_NAME)).toUnsafe()
+    val Vector128 = packageName.child(Name.identifier(VECTOR128))
     val throws = FqName("kotlin.native.Throws")
     val threadLocal = FqName("kotlin.native.concurrent.ThreadLocal")
     val sharedImmutable = FqName("kotlin.native.concurrent.SharedImmutable")
     val frozen = FqName("kotlin.native.internal.Frozen")
+    val leakDetectorCandidate = FqName("kotlin.native.internal.LeakDetectorCandidate")
+    val canBePrecreated = FqName("kotlin.native.internal.CanBePrecreated")
     val typedIntrinsic = FqName("kotlin.native.internal.TypedIntrinsic")
     val objCMethod = FqName("kotlinx.cinterop.ObjCMethod")
 }

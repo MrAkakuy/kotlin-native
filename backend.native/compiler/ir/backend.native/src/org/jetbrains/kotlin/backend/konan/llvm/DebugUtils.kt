@@ -20,11 +20,11 @@ import org.jetbrains.kotlin.ir.util.isTypeParameter
 import org.jetbrains.kotlin.ir.util.isUnsigned
 import org.jetbrains.kotlin.ir.util.render
 import org.jetbrains.kotlin.konan.CURRENT
-import org.jetbrains.kotlin.konan.KonanVersion
+import org.jetbrains.kotlin.konan.CompilerVersion
 import org.jetbrains.kotlin.konan.file.File
 
 internal object DWARF {
-    val producer                       = "konanc ${KonanVersion.CURRENT} / kotlin-compiler: ${KotlinVersion.CURRENT}"
+    val producer                       = "konanc ${CompilerVersion.CURRENT} / kotlin-compiler: ${KotlinVersion.CURRENT}"
     /* TODO: from LLVM sources is unclear what runtimeVersion corresponds to term in terms of dwarf specification. */
     val dwarfVersionMetaDataNodeName  get() = "Dwarf Version".mdString()
     val dwarfDebugInfoMetaDataNodeName get() = "Debug Info Version".mdString()
@@ -72,7 +72,7 @@ internal class DebugInfo internal constructor(override val context: Context):Con
     val llvmTypes = mapOf<IrType, LLVMTypeRef>(
             context.irBuiltIns.booleanType to context.llvm.llvmInt8,
             context.irBuiltIns.byteType    to context.llvm.llvmInt8,
-            context.irBuiltIns.charType    to context.llvm.llvmInt8,
+            context.irBuiltIns.charType    to context.llvm.llvmInt16,
             context.irBuiltIns.shortType   to context.llvm.llvmInt16,
             context.irBuiltIns.intType     to context.llvm.llvmInt32,
             context.irBuiltIns.longType    to context.llvm.llvmInt64,
@@ -128,7 +128,7 @@ internal fun generateDebugInfoHeader(context: Context) {
         @Suppress("UNCHECKED_CAST")
         context.debugInfo.module   = DICreateModule(
                 builder            = context.debugInfo.builder,
-                scope              = context.llvmModule as DIScopeOpaqueRef,
+                scope              = null,
                 name               = path.path(),
                 configurationMacro = "",
                 includePath        = "",
@@ -219,6 +219,7 @@ internal fun IrType.llvmType(context:Context): LLVMTypeRef = context.debugInfo.l
         PrimitiveBinaryType.LONG -> context.llvm.llvmInt64
         PrimitiveBinaryType.FLOAT -> context.llvm.llvmFloat
         PrimitiveBinaryType.DOUBLE -> context.llvm.llvmDouble
+        PrimitiveBinaryType.VECTOR128 -> context.llvm.llvmVector128
         else -> context.debugInfo.otherLlvmType
     }
 }

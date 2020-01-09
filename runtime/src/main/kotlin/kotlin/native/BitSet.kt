@@ -9,10 +9,11 @@ package kotlin.native
  * A vector of bits growing if necessary and allowing one to set/clear/read bits from it by a bit index.
  *
  * @constructor creates an empty bit set with the specified [size]
- * @param seze the size of one element in the array used to store bits.
+ * @param size the size of one element in the array used to store bits.
  */
 public class BitSet(size: Int = ELEMENT_SIZE) {
 
+    @kotlin.native.internal.CanBePrecreated
     companion object {
         // Default size of one element in the array used to store bits.
         private const val ELEMENT_SIZE = 64

@@ -17,6 +17,7 @@
 #import "Types.h"
 #import "Memory.h"
 #include "Natives.h"
+#include "ObjCInterop.h"
 
 #if KONAN_OBJC_INTEROP
 
@@ -67,6 +68,7 @@ struct ObjCTypeAdapter {
   const MethodTableRecord* kotlinMethodTable;
   int kotlinMethodTableSize;
 
+  const InterfaceTableRecord* kotlinItable;
   int kotlinItableSize;
 
   const char* objCName;
@@ -438,8 +440,11 @@ static const char* getBlockEncoding(id block) {
       reinterpret_cast<struct Block_descriptor_1_without_helpers*>(literal->descriptor)->signature;
 }
 
-// Note: replaced by compiler in appropriate compilation modes.
-__attribute__((weak)) convertReferenceFromObjC* Kotlin_ObjCExport_blockToFunctionConverters = nullptr;
+// Note: defined by compiler.
+extern "C" convertReferenceFromObjC* Kotlin_ObjCExport_blockToFunctionConverters;
+extern "C" int Kotlin_ObjCExport_blockToFunctionConverters_size;
+
+extern "C" id objc_retainBlock(id self);
 
 static OBJ_GETTER(blockToKotlinImp, id block, SEL cmd) {
   const char* encoding = getBlockEncoding(block);
@@ -447,10 +452,6 @@ static OBJ_GETTER(blockToKotlinImp, id block, SEL cmd) {
   // TODO: optimize:
   NSMethodSignature *signature = [NSMethodSignature signatureWithObjCTypes:encoding];
   int parameterCount = signature.numberOfArguments - 1; // 1 for the block itself.
-
-  if (parameterCount > 22) {
-    [NSException raise:NSGenericException format:@"Blocks with %d (>22) parameters aren't supported", parameterCount];
-  }
 
   for (int i = 1; i <= parameterCount; ++i) {
     const char* argEncoding = [signature getArgumentTypeAtIndex:i];
@@ -466,7 +467,17 @@ static OBJ_GETTER(blockToKotlinImp, id block, SEL cmd) {
           format:@"Blocks with non-reference-typed return value aren't supported (%s)", returnTypeEncoding];
   }
 
-  RETURN_RESULT_OF(Kotlin_ObjCExport_blockToFunctionConverters[parameterCount], block);
+  auto converter = parameterCount < Kotlin_ObjCExport_blockToFunctionConverters_size
+          ? Kotlin_ObjCExport_blockToFunctionConverters[parameterCount]
+          : nullptr;
+
+  if (converter != nullptr) {
+    RETURN_RESULT_OF(converter, block);
+  } else {
+    // There is no function class for this arity, so resulting object will not be cast to FunctionN class,
+    // and it is enough to convert block to arbitrary object conforming Function.
+    RETURN_RESULT_OF(AllocInstanceWithAssociatedObject, theOpaqueFunctionTypeInfo, objc_retainBlock(block));
+  }
 }
 
 static id Kotlin_ObjCExport_refToObjC_slowpath(ObjHeader* obj);
@@ -625,6 +636,8 @@ static const TypeInfo* createTypeInfo(
   const KStdVector<VTableElement>& vtable,
   const KStdVector<MethodTableRecord>& methodTable,
   const KStdOrderedMap<ClassId, KStdVector<VTableElement>>& interfaceVTables,
+  const InterfaceTableRecord* superItable,
+  int superItableSize,
   bool itableEqualsSuper
 ) {
   TypeInfo* result = (TypeInfo*)konanAllocMemory(sizeof(TypeInfo) + vtable.size() * sizeof(void*));
@@ -660,11 +673,10 @@ static const TypeInfo* createTypeInfo(
 
   result->implementedInterfaces_ = implementedInterfaces_;
   result->implementedInterfacesCount_ = implementedInterfaces.size();
-  const InterfaceTableRecord* superItable = superType->interfaceTable_;
   if (superItable != nullptr) {
     if (itableEqualsSuper) {
-      result->interfaceTableSize_ = superType->interfaceTableSize_;
-      result->interfaceTable_ = superType->interfaceTable_;
+      result->interfaceTableSize_ = superItableSize;
+      result->interfaceTable_ = superItable;
     } else {
       buildITable(result, interfaceVTables);
     }
@@ -794,6 +806,9 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType) {
   const MethodTableRecord* superMethodTable = nullptr;
   int superMethodTableSize = 0;
 
+  InterfaceTableRecord const* superITable = nullptr;
+  int superITableSize = 0;
+
   if (superTypeAdapter != nullptr) {
     // Then super class is Kotlin class.
 
@@ -802,6 +817,8 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType) {
     superVtable = superTypeAdapter->kotlinVtable;
     superMethodTable = superTypeAdapter->kotlinMethodTable;
     superMethodTableSize = superTypeAdapter->kotlinMethodTableSize;
+    superITable = superTypeAdapter->kotlinItable;
+    superITableSize = superTypeAdapter->kotlinItableSize;
   }
 
   if (superVtable == nullptr) superVtable = superType->vtable();
@@ -819,12 +836,14 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType) {
         superMethodTable, superMethodTable + superMethodTableSize
   );
 
-  InterfaceTableRecord const* superITable = superType->interfaceTable_;
+  if (superITable == nullptr) {
+    superITable = superType->interfaceTable_;
+    superITableSize = superType->interfaceTableSize_;
+  }
   KStdOrderedMap<ClassId, KStdVector<VTableElement>> interfaceVTables;
   if (superITable != nullptr) {
-    int superITableSize = superType->interfaceTableSize_;
-    superITableSize = superITableSize >= 0 ? superITableSize + 1 : -superITableSize;
-    for (int i = 0; i < superITableSize; ++i) {
+    int actualItableSize = superITableSize >= 0 ? superITableSize + 1 : -superITableSize;
+    for (int i = 0; i < actualItableSize; ++i) {
       auto& record = superITable[i];
       auto interfaceId = record.id;
       if (interfaceId == kInvalidInterfaceId) continue;
@@ -910,7 +929,8 @@ static const TypeInfo* createTypeInfo(Class clazz, const TypeInfo* superType) {
 
   // TODO: consider forbidding the class being abstract.
 
-  const TypeInfo* result = createTypeInfo(superType, addedInterfaces, vtable, methodTable, interfaceVTables, itableEqualsSuper);
+  const TypeInfo* result = createTypeInfo(superType, addedInterfaces, vtable, methodTable,
+                                          interfaceVTables, superITable, superITableSize, itableEqualsSuper);
 
   // TODO: it will probably never be requested, since such a class can't be instantiated in Kotlin.
   result->writableInfo_->objCExport.objCClass = clazz;
@@ -957,12 +977,13 @@ static void addVirtualAdapters(Class clazz, const ObjCTypeAdapter* typeAdapter) 
 static Class createClass(const TypeInfo* typeInfo, Class superClass) {
   RuntimeAssert(typeInfo->superType_ != nullptr, "");
 
-  char classNameBuffer[64];
-  snprintf(classNameBuffer, sizeof(classNameBuffer), "kobjcc%d", anonymousClassNextId++);
-  const char* className = classNameBuffer;
+  int classIndex = (anonymousClassNextId++);
+  KStdString className = Kotlin_ObjCInterop_getUniquePrefix();
+  className += "_kobjcc";
+  className += std::to_string(classIndex);
 
-  Class result = objc_allocateClassPair(superClass, className, 0);
-  RuntimeAssert(result != nullptr, "");
+  Class result = objc_allocateClassPair(superClass, className.c_str(), 0);
+  RuntimeCheck(result != nullptr, "");
 
   // TODO: optimize by adding virtual adapters only for overridden methods.
 

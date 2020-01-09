@@ -9,11 +9,11 @@ import llvm.LLVMTypeRef
 import org.jetbrains.kotlin.backend.common.serialization.KotlinManglerImpl
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.externalSymbolOrThrow
-import org.jetbrains.kotlin.backend.konan.descriptors.getAnnotationValue
+import org.jetbrains.kotlin.backend.konan.descriptors.getAnnotationStringValue
 import org.jetbrains.kotlin.backend.konan.descriptors.isAbstract
 import org.jetbrains.kotlin.backend.konan.ir.allParameters
-import org.jetbrains.kotlin.backend.konan.ir.getObjCMethodInfo
-import org.jetbrains.kotlin.backend.konan.ir.isObjCClassMethod
+import org.jetbrains.kotlin.backend.konan.getObjCMethodInfo
+import org.jetbrains.kotlin.backend.konan.isObjCClassMethod
 import org.jetbrains.kotlin.backend.konan.ir.isUnit
 import org.jetbrains.kotlin.backend.konan.llvm.KonanMangler.isExported
 import org.jetbrains.kotlin.ir.declarations.*
@@ -29,7 +29,7 @@ import org.jetbrains.kotlin.library.uniqueName
 // TODO: revise the naming scheme to ensure it produces unique names.
 // TODO: do not serialize descriptors of non-exported declarations.
 
-object KonanMangler : KotlinManglerImpl() {
+abstract class AbstractKonanMangler : KotlinManglerImpl() {
 
     override val IrType.isInlined
         get() = this.isInlinedNative()
@@ -62,18 +62,19 @@ object KonanMangler : KotlinManglerImpl() {
         return false
     }
 
-    override val IrFunction.argsPart get() = this.valueParameters.map {
+    override fun IrFunction.valueParamsPart(typeParameterNamer: (IrTypeParameter) -> String): String {
+        return this.valueParameters.map {
 
-        // TODO: there are clashes originating from ObjectiveC interop.
-        // kotlinx.cinterop.ObjCClassOf<T>.create(format: kotlin.String): T defined in platform.Foundation in file Foundation.kt
-        // and
-        // kotlinx.cinterop.ObjCClassOf<T>.create(string: kotlin.String): T defined in platform.Foundation in file Foundation.kt
+            // TODO: there are clashes originating from ObjectiveC interop.
+            // kotlinx.cinterop.ObjCClassOf<T>.create(format: kotlin.String): T defined in platform.Foundation in file Foundation.kt
+            // and
+            // kotlinx.cinterop.ObjCClassOf<T>.create(string: kotlin.String): T defined in platform.Foundation in file Foundation.kt
 
-        val argName =
-                if (this.hasObjCMethodAnnotation || this.hasObjCFactoryAnnotation || this.isObjCClassMethod()) "${it.name}:" else ""
-        "$argName${typeToHashString(it.type)}${if (it.isVararg) "_VarArg" else ""}"
-    }.joinToString(";")
-
+            val argName =
+                    if (this.hasObjCMethodAnnotation || this.hasObjCFactoryAnnotation || this.isObjCClassMethod()) "${it.name}:" else ""
+            "$argName${typeToHashString(it.type, typeParameterNamer)}${if (it.isVararg) "_VarArg" else ""}"
+        }.joinToString(";")
+    }
 
     override val IrFunction.platformSpecificFunctionName: String?
         get() {
@@ -89,7 +90,7 @@ object KonanMangler : KotlinManglerImpl() {
                         append(it.selector)
                         if (this@platformSpecificFunctionName is IrConstructor && this@platformSpecificFunctionName.isObjCConstructor) append("#Constructor")
 
-                        if ((this@platformSpecificFunctionName as? IrSimpleFunction)?.correspondingProperty != null) {
+                        if ((this@platformSpecificFunctionName as? IrSimpleFunction)?.correspondingPropertySymbol != null) {
                             append("#Accessor")
                         }
                     }
@@ -110,7 +111,7 @@ object KonanMangler : KotlinManglerImpl() {
             }
 
             this.annotations.findAnnotation(RuntimeNames.exportForCppRuntime)?.let {
-                val name = it.getAnnotationValue() ?: this.name.asString()
+                val name = it.getAnnotationStringValue() ?: this.name.asString()
                 return name // no wrapping currently required
             }
 
@@ -123,40 +124,37 @@ object KonanMangler : KotlinManglerImpl() {
         }
 }
 
+object KonanMangler : AbstractKonanMangler()
+
+object KonanManglerForBE : AbstractKonanMangler() {
+    override fun mangleTypeParameter(typeParameter: IrTypeParameter, typeParameterNamer: (IrTypeParameter) -> String): String =
+            typeParameter.name.asString()
+}
+
 internal val IrClass.writableTypeInfoSymbolName: String
     get() {
         assert (this.isExported())
         return "ktypew:" + this.fqNameForIrSerialization.toString()
     }
 
-internal val IrClass.objectInstanceFieldSymbolName: String
+internal val IrClass.objectInstanceGetterSymbolName: String
     get() {
         assert (this.isExported())
         assert (this.kind.isSingleton)
         assert (!this.isUnit())
 
-        return "kobjref:$fqNameForIrSerialization"
+        return "kobjget:$fqNameForIrSerialization"
     }
 
-internal val IrClass.objectInstanceShadowFieldSymbolName: String
-    get() {
-        assert (this.isExported())
-        assert (this.kind.isSingleton)
-        assert (!this.isUnit())
-        assert (this.objectIsShared)
+val IrFunction.functionName get() = with(KonanManglerForBE) { functionName }
 
-        return "kshadowobjref:$fqNameForIrSerialization"
-    }
+val IrFunction.symbolName get() = with(KonanManglerForBE) { symbolName }
 
-val IrFunction.functionName get() = with(KonanMangler) { functionName }
+val IrField.symbolName get() = with(KonanManglerForBE) { symbolName }
 
-val IrFunction.symbolName get() = with(KonanMangler) { symbolName }
+val IrClass.typeInfoSymbolName get() = with(KonanManglerForBE) { typeInfoSymbolName }
 
-val IrField.symbolName get() = with(KonanMangler) { symbolName }
-
-val IrClass.typeInfoSymbolName get() = with(KonanMangler) { typeInfoSymbolName }
-
-fun IrDeclaration.isExported() = with(KonanMangler) { isExported() }
+fun IrDeclaration.isExported() = with(KonanManglerForBE) { isExported() }
 
 // TODO: bring here dependencies of this method?
 internal fun RuntimeAware.getLlvmFunctionType(function: IrFunction): LLVMTypeRef {
