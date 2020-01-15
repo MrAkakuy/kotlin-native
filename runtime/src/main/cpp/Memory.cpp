@@ -89,8 +89,14 @@ constexpr size_t kMaxGcAllocThreshold = 8 * 1024 * 1024;
 
 typedef KStdUnorderedSet<ContainerHeader*> ContainerHeaderSet;
 typedef KStdVector<ContainerHeader*> ContainerHeaderList;
-typedef KStdVector<KRef*> KRefPtrList;
 typedef KStdDeque<ContainerHeader*> ContainerHeaderDeque;
+typedef KStdVector<KRef> KRefList;
+typedef KStdVector<KRef*> KRefPtrList;
+typedef KStdUnorderedSet<KRef> KRefSet;
+typedef KStdUnorderedMap<KRef, KInt> KRefIntMap;
+typedef KStdDeque<KRef> KRefDeque;
+typedef KStdDeque<KRefList> KRefListDeque;
+typedef KStdUnorderedMap<void**, std::pair<KRef*,int>> KThreadLocalStorageMap;
 
 // A little hack that allows to enable -O2 optimizations
 // Prevents clang from replacing FrameOverlay struct
@@ -103,6 +109,10 @@ volatile int allocCount = 0;
 volatile int aliveMemoryStatesCount = 0;
 
 KBoolean g_checkLeaks = KonanNeedDebugInfo;
+
+// Only used by the leak detector.
+KRef g_leakCheckerGlobalList = nullptr;
+KInt g_leakCheckerGlobalLock = 0;
 
 // TODO: can we pass this variable as an explicit argument?
 THREAD_LOCAL_VARIABLE MemoryState* memoryState = nullptr;
@@ -375,22 +385,23 @@ private:
 
   void processAbandoned() {
     if (this->releaseList != nullptr) {
-      bool hadNoRuntimeInitialized = (memoryState == nullptr);
+      bool hadNoStateInitialized = (memoryState == nullptr);
 
-      if (hadNoRuntimeInitialized) {
-        Kotlin_initRuntimeIfNeeded(); // Required by ReleaseHeapRef.
+      if (hadNoStateInitialized) {
+        // Disregard request if all runtimes are no longer alive.
+        if (atomicGet(&aliveMemoryStatesCount) == 0)
+          return;
+
+        memoryState = InitMemory(); // Required by ReleaseHeapRef.
       }
 
       processEnqueuedReleaseRefsWith([](ObjHeader* obj) {
         ReleaseHeapRef(obj);
       });
 
-      if (hadNoRuntimeInitialized) {
-        // This thread is likely not intended to run Kotlin code.
-        // In this case it has no chances to process the release-refs enqueued above using
-        // the general heuristics, so do this manually:
-        garbageCollect();
-        // TODO: how to handle subsequent processAbandoned() calls?
+      if (hadNoStateInitialized) {
+        // Discard the memory state.
+        DeinitMemory(memoryState);
       }
     }
   }
@@ -401,6 +412,10 @@ struct MemoryState {
   // Set of all containers.
   ContainerHeaderSet* containers;
 #endif
+
+  KThreadLocalStorageMap* tlsMap;
+  KRef* tlsMapLastStart;
+  void* tlsMapLastKey;
 
 #if USE_GC
   // Finalizer queue - linked list of containers scheduled for finalization.
@@ -689,23 +704,37 @@ inline container_size_t objectSize(const ObjHeader* obj) {
 }
 
 template <typename func>
+inline void traverseObjectFields(ObjHeader* obj, func process) {
+  const TypeInfo* typeInfo = obj->type_info();
+  if (typeInfo != theArrayTypeInfo) {
+    for (int index = 0; index < typeInfo->objOffsetsCount_; index++) {
+      ObjHeader** location = reinterpret_cast<ObjHeader**>(
+          reinterpret_cast<uintptr_t>(obj) + typeInfo->objOffsets_[index]);
+      process(location);
+    }
+  } else {
+    ArrayHeader* array = obj->array();
+    for (int index = 0; index < array->count_; index++) {
+      process(ArrayAddressOfElementAt(array, index));
+    }
+  }
+}
+
+template <typename func>
+inline void traverseReferredObjects(ObjHeader* obj, func process) {
+  traverseObjectFields(obj, [process](ObjHeader** location) {
+    ObjHeader* ref = *location;
+    if (ref != nullptr) process(ref);
+  });
+}
+
+template <typename func>
 inline void traverseContainerObjectFields(ContainerHeader* container, func process) {
   RuntimeAssert(!isAggregatingFrozenContainer(container), "Must not be called on such containers");
   ObjHeader* obj = reinterpret_cast<ObjHeader*>(container + 1);
+
   for (int object = 0; object < container->objectCount(); object++) {
-    const TypeInfo* typeInfo = obj->type_info();
-    if (typeInfo != theArrayTypeInfo) {
-      for (int index = 0; index < typeInfo->objOffsetsCount_; index++) {
-        ObjHeader** location = reinterpret_cast<ObjHeader**>(
-            reinterpret_cast<uintptr_t>(obj) + typeInfo->objOffsets_[index]);
-        process(location);
-      }
-    } else {
-      ArrayHeader* array = obj->array();
-      for (int index = 0; index < array->count_; index++) {
-        process(ArrayAddressOfElementAt(array, index));
-      }
-    }
+    traverseObjectFields(obj, process);
     obj = reinterpret_cast<ObjHeader*>(
       reinterpret_cast<uintptr_t>(obj) + objectSize(obj));
   }
@@ -896,14 +925,29 @@ void freeAggregatingFrozenContainer(ContainerHeader* container) {
 
 void runDeallocationHooks(ContainerHeader* container) {
   ObjHeader* obj = reinterpret_cast<ObjHeader*>(container + 1);
-
   for (int index = 0; index < container->objectCount(); index++) {
     if (obj->has_meta_object()) {
+      if (KonanNeedDebugInfo && (obj->type_info()->flags_ & TF_LEAK_DETECTOR_CANDIDATE) != 0 && g_checkLeaks) {
+        // Remove the object from the double-linked list of potentially cyclic objects.
+        auto* meta = obj->meta_object();
+        lock(&g_leakCheckerGlobalLock);
+        // Get previous.
+        auto* previous = meta->LeakDetector.previous_;
+        auto* previousMeta = (previous != nullptr) ? previous->meta_object() : nullptr;
+        auto* next = meta->LeakDetector.next_;
+        auto* nextMeta = (next != nullptr) ? next->meta_object() : nullptr;
+        // Remove current.
+        if (previous != nullptr)
+          previous->meta_object()->LeakDetector.next_ = next;
+        if (next != nullptr)
+          next->meta_object()->LeakDetector.previous_ = previous;
+        if (obj == g_leakCheckerGlobalList)
+          g_leakCheckerGlobalList = next;
+        unlock(&g_leakCheckerGlobalLock);
+      }
       ObjHeader::destroyMetaObject(&obj->typeInfoOrMeta_);
     }
-
-    obj = reinterpret_cast<ObjHeader*>(
-      reinterpret_cast<uintptr_t>(obj) + objectSize(obj));
+    obj = reinterpret_cast<ObjHeader*>(reinterpret_cast<uintptr_t>(obj) + objectSize(obj));
   }
 }
 
@@ -1363,8 +1407,8 @@ void collectWhite(MemoryState* state, ContainerHeader* start) {
           toVisit.push_front(childContainer);
         }
      });
-    runDeallocationHooks(container);
-    scheduleDestroyContainer(state, container);
+     runDeallocationHooks(container);
+     scheduleDestroyContainer(state, container);
   }
 }
 #endif
@@ -1558,7 +1602,7 @@ void garbageCollect(MemoryState* state, bool force) {
   size_t beforeDecrements = state->toRelease->size();
   decrementStack(state);
   size_t afterDecrements = state->toRelease->size();
-  ssize_t stackReferences = afterDecrements - beforeDecrements;
+  long stackReferences = afterDecrements - beforeDecrements;
   if (state->gcErgonomics && stackReferences * 5 > state->gcThreshold) {
     increaseGcThreshold(state);
     GC_LOG("||| GC: too many stack references, increased threshold to \n", state->gcThreshold);
@@ -1695,6 +1739,7 @@ MemoryState* initMemory() {
   memoryState->allocSinceLastGcThreshold = kMaxGcAllocThreshold;
   memoryState->gcErgonomics = true;
 #endif
+  memoryState->tlsMap = konanConstructInstance<KThreadLocalStorageMap>();
   memoryState->foreignRefManager = ForeignRefManager::create();
   atomicAdd(&aliveMemoryStatesCount, 1);
   return memoryState;
@@ -1712,6 +1757,8 @@ void deinitMemory(MemoryState* memoryState) {
   konanDestructInstance(memoryState->toFree);
   konanDestructInstance(memoryState->roots);
   konanDestructInstance(memoryState->toRelease);
+  RuntimeAssert(memoryState->tlsMap->size() == 0, "Must be already cleared");
+  konanDestructInstance(memoryState->tlsMap);
   RuntimeAssert(memoryState->finalizerQueue == nullptr, "Finalizer queue must be empty");
   RuntimeAssert(memoryState->finalizerQueueSize == 0, "Finalizer queue must be empty");
 
@@ -1876,6 +1923,18 @@ OBJ_GETTER(allocInstance, const TypeInfo* type_info) {
   checkIfGcNeeded(state);
 #endif  // USE_GC
   auto container = ObjectContainer(state, type_info);
+  ObjHeader* obj = container.GetPlace();
+  if (KonanNeedDebugInfo && g_checkLeaks && (type_info->flags_ & TF_LEAK_DETECTOR_CANDIDATE) != 0) {
+    // Add newly allocated object to the double-linked list of potentially cyclic objects.
+    MetaObjHeader* meta = obj->meta_object();
+    lock(&g_leakCheckerGlobalLock);
+    KRef old = g_leakCheckerGlobalList;
+    g_leakCheckerGlobalList = obj;
+    meta->LeakDetector.next_ = old;
+    if (old != nullptr)
+      old->meta_object()->LeakDetector.previous_ = obj;
+    unlock(&g_leakCheckerGlobalLock);
+  }
 #if USE_GC
   if (Strict) {
     rememberNewContainer(container.header());
@@ -1883,7 +1942,7 @@ OBJ_GETTER(allocInstance, const TypeInfo* type_info) {
     makeShareable(container.header());
   }
 #endif  // USE_GC
-  RETURN_OBJ(container.GetPlace());
+  RETURN_OBJ(obj);
 }
 
 template <bool Strict>
@@ -2454,6 +2513,7 @@ void ensureNeverFrozen(ObjHeader* object) {
    object->meta_object()->flags_ |= MF_NEVER_FROZEN;
 }
 
+// TODO: incorrect, use 3-color scheme.
 KBoolean ensureAcyclicAndSet(ObjHeader* where, KInt index, ObjHeader* what) {
     RuntimeAssert(where->container() != nullptr && where->container()->frozen(), "Must be used on frozen objects only");
     RuntimeAssert(what == nullptr || isPermanentOrFrozen(what),
@@ -2503,6 +2563,99 @@ void shareAny(ObjHeader* obj) {
   container->makeShared();
 }
 
+OBJ_GETTER0(detectCyclicReferences) {
+  // Collect rootset, hold references to simplify remaining code.
+  KRefList rootset;
+  lock(&g_leakCheckerGlobalLock);
+  auto* candidate = g_leakCheckerGlobalList;
+  while (candidate != nullptr) {
+    addHeapRef(candidate);
+    rootset.push_back(candidate);
+    candidate = candidate->meta_object()->LeakDetector.next_;
+  }
+  unlock(&g_leakCheckerGlobalLock);
+  KRefSet cyclic;
+  KRefSet seen;
+  KRefDeque toVisit;
+  for (auto* root: rootset) {
+    seen.clear();
+    toVisit.clear();
+    traverseReferredObjects(root, [&toVisit](ObjHeader* obj) { toVisit.push_front(obj); });
+    bool seenToRoot = false;
+    while (!toVisit.empty() && !seenToRoot) {
+      KRef current = toVisit.front();
+      toVisit.pop_front();
+      if (current == root) seenToRoot = true;
+      // TODO: racy against concurrent mutators.
+      if (seen.count(current) == 0) {
+        traverseReferredObjects(current, [&toVisit](ObjHeader* obj) {
+           toVisit.push_front(obj);
+        });
+        seen.insert(current);
+      }
+    }
+    if (seenToRoot) {
+      cyclic.insert(root);
+    }
+  }
+  int numElements = cyclic.size();
+  ArrayHeader* result = AllocArrayInstance(theArrayTypeInfo, numElements, OBJ_RESULT)->array();
+  KRef* place = ArrayAddressOfElementAt(result, 0);
+  for (auto* it: cyclic) {
+    UpdateHeapRef(place++, it);
+  }
+  for (auto* root: rootset) {
+    ReleaseHeapRef(root);
+  }
+  RETURN_OBJ(result->obj());
+}
+
+OBJ_GETTER(findCycle, KRef root) {
+  KRefSet seen;
+  KRefListDeque queue;
+  KRefDeque toVisit;
+  KRefList path;
+  traverseReferredObjects(root, [&toVisit](ObjHeader* obj) { toVisit.push_front(obj); });
+  bool isFound = false;
+  while (!toVisit.empty() && !isFound) {
+    KRef current = toVisit.front();
+    toVisit.pop_front();
+    // Do DFS path search.
+    KRefList first;
+    first.push_back(current);
+    queue.emplace_back(first);
+    seen.clear();
+    while (!queue.empty()) {
+      KRefList currentPath = queue.back();
+      queue.pop_back();
+      KRef node = currentPath[currentPath.size() - 1];
+      if (node == root) {
+         isFound = true;
+         path = currentPath;
+         break;
+      }
+      if (seen.count(node) == 0) {
+        // TODO: racy against concurrent mutators.
+        traverseReferredObjects(node, [&queue, &currentPath](ObjHeader* obj) {
+           KRefList newPath(currentPath);
+           newPath.push_back(obj);
+           queue.emplace_back(newPath);
+        });
+        seen.insert(node);
+      }
+    }
+  }
+  ArrayHeader* result = nullptr;
+  if (isFound) {
+    result = AllocArrayInstance(theArrayTypeInfo, path.size(), OBJ_RESULT)->array();
+    KRef* place = ArrayAddressOfElementAt(result, 0);
+    for (auto* it: path) {
+        UpdateHeapRef(place++, it);
+    }
+  }
+  RETURN_OBJ(result->obj());
+}
+
 }  // namespace
 
 MetaObjHeader* ObjHeader::createMetaObject(TypeInfo** location) {
@@ -2534,9 +2687,9 @@ MetaObjHeader* ObjHeader::createMetaObject(TypeInfo** location) {
 void ObjHeader::destroyMetaObject(TypeInfo** location) {
   MetaObjHeader* meta = clearPointerBits(*(reinterpret_cast<MetaObjHeader**>(location)), OBJECT_TAG_MASK);
   *const_cast<const TypeInfo**>(location) = meta->typeInfo_;
-  if (meta->counter_ != nullptr) {
-    WeakReferenceCounterClear(meta->counter_);
-    ZeroHeapRef(&meta->counter_);
+  if (meta->WeakReference.counter_ != nullptr) {
+    WeakReferenceCounterClear(meta->WeakReference.counter_);
+    ZeroHeapRef(&meta->WeakReference.counter_);
   }
 
 #ifdef KONAN_OBJC_INTEROP
@@ -2905,6 +3058,15 @@ KBoolean Kotlin_native_internal_GC_getTuneThreshold(KRef) {
 #endif
 }
 
+OBJ_GETTER(Kotlin_native_internal_GC_detectCycles, KRef) {
+  if (!KonanNeedDebugInfo || !g_checkLeaks) RETURN_OBJ(nullptr);
+  RETURN_RESULT_OF0(detectCyclicReferences);
+}
+
+OBJ_GETTER(Kotlin_native_internal_GC_findCycle, KRef, KRef root) {
+  RETURN_RESULT_OF(findCycle, root);
+}
+
 KNativePtr CreateStablePointer(KRef any) {
   return createStablePointer(any);
 }
@@ -2957,5 +3119,45 @@ void Konan_Platform_setMemoryLeakChecker(KBoolean value) {
   g_checkLeaks = value;
 }
 
+void AddTLSRecord(MemoryState* memory, void** key, int size) {
+  auto* tlsMap = memory->tlsMap;
+  auto it = tlsMap->find(key);
+  if (it != tlsMap->end()) {
+    RuntimeAssert(it->second.second == size, "Size must be consistent");
+    return;
+  }
+  KRef* start = reinterpret_cast<KRef*>(konanAllocMemory(size * sizeof(KRef)));
+  tlsMap->emplace(key, std::make_pair(start, size));
+}
+
+void ClearTLSRecord(MemoryState* memory, void** key) {
+  auto* tlsMap = memory->tlsMap;
+  auto it = tlsMap->find(key);
+  if (it != tlsMap->end()) {
+    KRef* start = it->second.first;
+    int count = it->second.second;
+    for (int i = 0; i < count; i++) {
+      UpdateHeapRef(start + i, nullptr);
+    }
+    konanFreeMemory(start);
+    tlsMap->erase(it);
+  }
+}
+
+KRef* LookupTLS(void** key, int index) {
+  auto* state = memoryState;
+  auto* tlsMap = state->tlsMap;
+  // In many cases there is only one module, so this one element cache.
+  if (state->tlsMapLastKey == key) {
+    return state->tlsMapLastStart + index;
+  }
+  auto it = tlsMap->find(key);
+  RuntimeAssert(it != tlsMap->end(), "Must be there");
+  RuntimeAssert(index < it->second.second, "Out of bound in TLS access");
+  KRef* start = it->second.first;
+  state->tlsMapLastKey = key;
+  state->tlsMapLastStart = start;
+  return start + index;
+}
 
 } // extern "C"

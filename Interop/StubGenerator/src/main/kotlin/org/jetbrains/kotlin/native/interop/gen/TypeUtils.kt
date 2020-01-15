@@ -39,6 +39,7 @@ fun Type.getStringRepresentation(): String = when (this) {
     is IntegerType -> this.spelling
     is FloatingType -> this.spelling
 
+    is VectorType -> this.spelling
     is PointerType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
     is ArrayType -> getPointerTypeStringRepresentation(this.elemType, this is ConstArrayType)
     is CxxClassPointerType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)

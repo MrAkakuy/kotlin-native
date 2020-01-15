@@ -7,8 +7,6 @@ package org.jetbrains.kotlin.backend.konan
 
 import llvm.*
 import org.jetbrains.kotlin.backend.common.DumpIrTreeWithDescriptorsVisitor
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedSimpleFunctionDescriptor
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedTypeParameterDescriptor
 import org.jetbrains.kotlin.backend.konan.descriptors.*
 import org.jetbrains.kotlin.backend.konan.ir.KonanIr
 import org.jetbrains.kotlin.library.SerializedMetadata
@@ -46,9 +44,11 @@ import java.lang.System.out
 import kotlin.LazyThreadSafetyMode.PUBLICATION
 import kotlin.reflect.KProperty
 import org.jetbrains.kotlin.backend.common.ir.copyTo
-import org.jetbrains.kotlin.backend.common.serialization.KotlinMangler
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
 import org.jetbrains.kotlin.backend.konan.llvm.coverage.CoverageManager
+import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
+import org.jetbrains.kotlin.ir.descriptors.WrappedTypeParameterDescriptor
+import org.jetbrains.kotlin.ir.symbols.IrSymbol
 import org.jetbrains.kotlin.ir.symbols.impl.IrTypeParameterSymbolImpl
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.konan.library.KonanLibraryLayout
@@ -58,7 +58,7 @@ import org.jetbrains.kotlin.library.SerializedIrModule
  * Offset for synthetic elements created by lowerings and not attributable to other places in the source code.
  */
 
-internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler by KonanMangler {
+internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler by KonanManglerForBE {
     private val enumSpecialDeclarationsFactory by lazy { EnumSpecialDeclarationsFactory(context) }
     private val outerThisFields = mutableMapOf<ClassDescriptor, IrField>()
     private val bridgesDescriptors = mutableMapOf<Pair<IrSimpleFunction, BridgeDirections>, IrSimpleFunction>()
@@ -141,7 +141,9 @@ internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler 
                 isTailrec = false,
                 isSuspend = function.isSuspend,
                 returnType = returnType,
-                isExpect = false
+                isExpect = false,
+                isFakeOverride = false,
+                isOperator = false
         ).apply {
             descriptor.bind(this)
             parent = function.parent
@@ -191,6 +193,7 @@ internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler 
 }
 
 internal class Context(config: KonanConfig) : KonanBackendContext(config) {
+    override val lateinitNullableFields = mutableMapOf<IrField, IrField>()
     lateinit var frontendServices: FrontendServices
     lateinit var environment: KotlinCoreEnvironment
     lateinit var bindingContext: BindingContext
@@ -203,6 +206,8 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     lateinit var objCExport: ObjCExport
 
     lateinit var cAdapterGenerator: CAdapterGenerator
+
+    lateinit var expectDescriptorToSymbol: MutableMap<DeclarationDescriptor, IrSymbol>
 
     override val builtIns: KonanBuiltIns by lazy(PUBLICATION) {
         moduleDescriptor.builtIns as KonanBuiltIns
@@ -333,7 +338,7 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     fun disposeLlvm() {
         if (llvmDisposed) return
         if (::debugInfo.isInitialized)
-            DIDispose(debugInfo.builder)
+            LLVMDisposeDIBuilder(debugInfo.builder)
         if (llvmModule != null)
             LLVMDisposeModule(llvmModule)
         if (::llvm.isInitialized)
@@ -345,9 +350,6 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
     val cStubsManager = CStubsManager(config.target)
 
     val coverage = CoverageManager(this)
-
-    // Cache used for source offset->(line,column) mapping.
-    val fileEntryCache = mutableMapOf<String, SourceManager.FileEntry>()
 
     protected fun separator(title: String) {
         println("\n\n--- ${title} ----------------------\n")
@@ -483,6 +485,8 @@ internal class Context(config: KonanConfig) : KonanBackendContext(config) {
             producingCache = config.produce.isCache,
             librariesToCache = config.librariesToCache
     )
+
+    val declaredLocalArrays: MutableMap<String, LLVMTypeRef> = HashMap()
 }
 
 private fun MemberScope.getContributedClassifier(name: String) =

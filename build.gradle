@@ -55,12 +55,22 @@ defaultTasks 'clean', 'dist'
 
 convention.plugins.platformInfo = PlatformInfo
 
+if (isMac()) {
+    checkXcodeVersion(project)
+}
+
 ext {
     distDir = file('dist')
     dependenciesDir = DependencyProcessor.defaultDependenciesRoot
     experimentalEnabled = project.hasProperty("org.jetbrains.kotlin.native.experimentalTargets")
     platformManager = new PlatformManager(DistributionKt.buildDistribution(projectDir.absolutePath),
             ext.experimentalEnabled)
+
+    cacheableTargets = [
+            KonanTarget.MACOS_X64.INSTANCE,
+            KonanTarget.IOS_X64.INSTANCE
+    ]
+    cacheableTargetNames = cacheableTargets.collect { it.visibleName }
 
     kotlinCompilerModule="org.jetbrains.kotlin:kotlin-compiler:${kotlinVersion}"
     kotlinStdLibModule="org.jetbrains.kotlin:kotlin-stdlib:${kotlinVersion}"
@@ -72,7 +82,7 @@ ext {
     kotlinNativeUtilsModule="org.jetbrains.kotlin:kotlin-native-utils:${kotlinVersion}"
     kotlinUtilKliMetadatabModule="org.jetbrains.kotlin:kotlin-util-klib-metadata:${kotlinVersion}"
 
-    konanVersionFull = KonanVersionGeneratedKt.getCurrentKonanVersion()
+    konanVersionFull = CompilerVersionGeneratedKt.getCurrentCompilerVersion()
     gradlePluginVersion = konanVersionFull
 }
 
@@ -97,6 +107,9 @@ allprojects {
         }
         maven {
             url kotlinCompilerRepo
+        }
+        maven {
+            url "https://dl.bintray.com/kotlin/kotlin-dev"
         }
     }
 
@@ -199,7 +212,7 @@ dependencies {
 }
 
 task sharedJar {
-    dependsOn gradle.includedBuild('kotlin-native-shared').task(':jar')
+    dependsOn gradle.includedBuild('shared').task(':jar')
 }
 
 task gradlePluginJar {
@@ -262,6 +275,11 @@ task detectJarCollision(type: CollisionDetector) {
     resolvingRules["META-INF/metadata.kotlin_module"] = "kotlin-compiler"
     resolvingRules["META-INF/type-system.kotlin_module"] = "kotlin-compiler"
     resolvingRules["META-INF/util.runtime.kotlin_module"] = "kotlin-compiler"
+
+    // These collisions are introduced by kotlinx-metadata-klib.
+    resolvingRules["META-INF/serialization.kotlin_module"] = "kotlin-compiler"
+    resolvingRules["META-INF/kotlin-util-klib-metadata.kotlin_module"] = "kotlin-compiler"
+
     resolvingRules["kotlin/annotation/annotation.kotlin_builtins"] = "kotlin-compiler"
     resolvingRules["kotlin/collections/collections.kotlin_builtins"] = "kotlin-compiler"
     resolvingRules["kotlin/coroutines/coroutines.kotlin_builtins"] = "kotlin-compiler"
@@ -271,7 +289,7 @@ task detectJarCollision(type: CollisionDetector) {
     resolvingRules["kotlin/reflect/reflect.kotlin_builtins"] = "kotlin-compiler"
     resolvingRules["META-INF/maven/com.google.protobuf/protobuf-java/pom.properties"] = "kotlin-compiler"
     resolvingRules["META-INF/maven/com.google.protobuf/protobuf-java/pom.xml"] = "kotlin-compiler"
-    librariesWithIgnoredClassCollisions.addAll(["kotlin-util-klib", "kotlin-util-io"])
+    librariesWithIgnoredClassCollisions.addAll(["kotlin-util-klib", "kotlin-util-io", "kotlinx-metadata-klib"])
     if (project.hasProperty('kotlinProjectPath')) {
         resolvingRulesWithRegexes[new Regex("META-INF/.+\\.kotlin_module")] = "kotlin-compiler"
         resolvingRules["META-INF/extensions/compiler.xml"] = "kotlin-compiler"
@@ -280,12 +298,13 @@ task detectJarCollision(type: CollisionDetector) {
                                                     "frontend.common", "frontend.java", "cli-common", "ir.tree",
                                                     "ir.psi2ir", "ir.backend.common", "backend.jvm", "backend.js",
                                                     "backend.wasm", "ir.serialization.common", "ir.serialization.js",
+                                                    "ir.serialization.jvm", "jvm",
                                                     "backend-common", "backend", "plugin-api", "light-classes", "cli",
                                                     "cli-js", "incremental-compilation-impl", "js.ast", "js.serializer",
                                                     "js.parser", "js.frontend", "js.translator", "js.dce", "metadata",
                                                     "metadata.jvm", "descriptors", "descriptors.jvm", "descriptors.runtime",
                                                     "deserialization", "util.runtime", "type-system", "cones", "resolve",
-                                                    "tree", "psi2fir", "fir2ir", "java", "kotlin-build-common"])
+                                                    "tree", "psi2fir", "fir2ir", "java", "kotlin-build-common", "lightTree"])
     }
 }
 
@@ -348,6 +367,16 @@ task distCompiler(type: Copy) {
         file('konan/experimentalTargetsEnabled').text = ""
     } else {
         delete('konan/experimentalTargetsEnabled')
+    }
+}
+
+task distDef(type: Copy) {
+
+    destinationDir distDir
+
+    from(project("platformLibs").file("src/platform")) {
+        into('konan/platformDef')
+        include '**/*.def'
     }
 }
 
@@ -422,6 +451,9 @@ targetList.each { target ->
 
     task("${target}PlatformLibs") {
         dependsOn ":platformLibs:${target}Install"
+        if (target in cacheableTargetNames) {
+            dependsOn(":platformLibs:${target}Cache")
+        }
     }
 
     task("${target}CrossDist") {
@@ -441,6 +473,7 @@ targetList.each { target ->
 
 task distPlatformLibs {
     dependsOn ':platformLibs:hostInstall'
+    dependsOn ':platformLibs:hostCache'
 }
 
 task dist {
@@ -452,6 +485,7 @@ task crossDist {
 }
 
 task bundle(type: (isWindows()) ? Zip : Tar) {
+    dependsOn("distDef")
     if (isMac()) {
       dependsOn('bundleRestricted')
     }
@@ -472,16 +506,24 @@ task bundle(type: (isWindows()) ? Zip : Tar) {
 }
 
 task bundleRestricted(type: Tar) {
+    dependsOn("distDef")
     def simpleOsName = HostManager.simpleOsName()
     baseName = "kotlin-native-restricted-$simpleOsName-$konanVersionFull"
     from("$project.rootDir/dist") {
         include '**'
         exclude 'dependencies'
         exclude 'klib/testLibrary'
-        exclude 'klib/platform/macos_x64'
-        exclude 'klib/platform/ios_x64'
-        exclude 'klib/platform/ios_arm64'
-        exclude 'klib/platform/ios_arm32'
+        platformManager.targetValues.each { target ->
+            if (PlatformInfo.isAppleTarget(target)) {
+                exclude "klib/platform/${target.name}"
+                exclude {
+                    // Exclude platform libraries caches too.
+                    !it.isDirectory && it.relativePath.startsWithAny("klib/cache/${target.name}-g") &&
+                            it.name != "libstdlib-cache.a"
+                }
+            }
+        }
+        exclude '**/xcode_license.pdf'
         into baseName
     }
 
@@ -613,7 +655,7 @@ task uploadBundle {
     }
 }
 
-task teamcityKonanVersion {
+task teamcityCompilerVersion {
     doLast {
         println("##teamcity[setParameter name='kotlin.native.version.base' value='$konanVersion']")
         println("##teamcity[setParameter name='kotlin.native.version.full' value='$konanVersionFull']")
@@ -630,9 +672,11 @@ task clean {
     }
 }
 
-task pusher(type:  KotlinBuildPusher){
+task pusher(type: KotlinBuildPusher){
     kotlinVersion = project.kotlinVersion
-    konanVersion = KonanVersionGeneratedKt.getCurrentKonanVersion()
-    buildServer = "teamcity.jetbrains.com"
+    konanVersion = CompilerVersionGeneratedKt.getCurrentCompilerVersion()
+    buildServer = "buildserver.labs.intellij.net"
+    compilerConfigurationId = System.getenv("TEAMCITY_COMPILER_ID") ?: "Kotlin_KotlinDev_Compiler"
+    overrideConfigurationId = System.getenv("TEAMCITY_OVERRIDE_NATIVE_ID") ?: "Kotlin_KotlinDev_DeployMavenArtifacts_OverrideNative"
     token = project.findProperty("teamcityBearToken") ?: System.getenv("TEAMCITY_BEAR_TOKEN")
 }

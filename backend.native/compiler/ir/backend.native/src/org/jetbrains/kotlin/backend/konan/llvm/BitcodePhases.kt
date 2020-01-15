@@ -6,6 +6,10 @@
 package org.jetbrains.kotlin.backend.konan.llvm
 
 import llvm.*
+import org.jetbrains.kotlin.backend.common.phaser.CompilerPhase
+import org.jetbrains.kotlin.backend.common.phaser.PhaseConfig
+import org.jetbrains.kotlin.backend.common.phaser.PhaserState
+import org.jetbrains.kotlin.backend.common.phaser.namedUnitPhase
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.GlobalHierarchyAnalysis
 import org.jetbrains.kotlin.backend.konan.optimizations.*
@@ -29,7 +33,7 @@ internal val contextLLVMSetupPhase = makeKonanModuleOpPhase(
             llvmContext = LLVMContextCreate()!!
             val llvmModule = LLVMModuleCreateWithNameInContext("out", llvmContext)!!
             context.llvmModule = llvmModule
-            context.debugInfo.builder = DICreateBuilder(llvmModule)
+            context.debugInfo.builder = LLVMCreateDIBuilder(llvmModule)
         }
 )
 
@@ -44,10 +48,14 @@ internal val createLLVMDeclarationsPhase = makeKonanModuleOpPhase(
         }
 )
 
-internal val disposeLLVMPhase = makeKonanModuleOpPhase(
+internal val disposeLLVMPhase = namedUnitPhase(
         name = "DisposeLLVM",
         description = "Dispose LLVM",
-        op = { context, _ -> context.disposeLlvm() }
+        lower = object : CompilerPhase<Context, Unit, Unit> {
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<Unit>, context: Context, input: Unit) {
+                context.disposeLlvm()
+            }
+        }
 )
 
 internal val RTTIPhase = makeKonanModuleOpPhase(
@@ -211,6 +219,15 @@ internal val escapeAnalysisPhase = makeKonanModuleOpPhase(
         }
 )
 
+internal val localEscapeAnalysisPhase = makeKonanModuleOpPhase(
+        name = "LocalEscapeAnalysis",
+        description = "Local escape analysis",
+        prerequisite = setOf(buildDFGPhase, devirtualizationPhase),
+        op = { context, _ ->
+            LocalEscapeAnalysis.computeLifetimes(context, context.moduleDFG!!, context.lifetimes)
+        }
+)
+
 internal val serializeDFGPhase = makeKonanModuleOpPhase(
         name = "SerializeDFG",
         description = "Data flow graph serializing",
@@ -244,10 +261,26 @@ internal val cStubsPhase = makeKonanModuleOpPhase(
         op = { context, _ -> produceCStubs(context) }
 )
 
-internal val produceOutputPhase = makeKonanModuleOpPhase(
+internal val linkBitcodeDependenciesPhase = makeKonanModuleOpPhase(
+        name = "LinkBitcodeDependencies",
+        description = "Link bitcode dependencies",
+        op = { context, _ -> linkBitcodeDependencies(context) }
+)
+
+internal val bitcodeOptimizationPhase = makeKonanModuleOpPhase(
+        name = "BitcodeOptimization",
+        description = "Optimize bitcode",
+        op = { context, _ -> runLlvmOptimizationPipeline(context) }
+)
+
+internal val produceOutputPhase = namedUnitPhase(
         name = "ProduceOutput",
         description = "Produce output",
-        op = { context, _ -> produceOutput(context) }
+        lower = object : CompilerPhase<Context, Unit, Unit> {
+            override fun invoke(phaseConfig: PhaseConfig, phaserState: PhaserState<Unit>, context: Context, input: Unit) {
+                produceOutput(context)
+            }
+        }
 )
 
 internal val verifyBitcodePhase = makeKonanModuleOpPhase(

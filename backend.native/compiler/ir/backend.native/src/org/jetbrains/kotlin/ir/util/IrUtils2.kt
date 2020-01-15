@@ -6,8 +6,6 @@
 package org.jetbrains.kotlin.ir.util
 
 import org.jetbrains.kotlin.backend.common.CommonBackendContext
-import org.jetbrains.kotlin.backend.common.descriptors.*
-import org.jetbrains.kotlin.backend.common.descriptors.WrappedVariableDescriptor
 import org.jetbrains.kotlin.backend.common.descriptors.substitute
 import org.jetbrains.kotlin.backend.konan.KonanBackendContext
 import org.jetbrains.kotlin.backend.konan.KonanCompilationException
@@ -27,6 +25,8 @@ import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.declarations.impl.*
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
+import org.jetbrains.kotlin.ir.descriptors.WrappedFieldDescriptor
+import org.jetbrains.kotlin.ir.descriptors.WrappedVariableDescriptor
 import org.jetbrains.kotlin.ir.expressions.*
 import org.jetbrains.kotlin.ir.expressions.impl.*
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
@@ -73,7 +73,8 @@ internal fun IrFile.addTopLevelInitializer(expression: IrExpression, context: Ko
             Visibilities.PRIVATE,
             isFinal = true,
             isExternal = false,
-            isStatic = true
+            isStatic = true,
+            isFakeOverride = false
     ).apply {
         descriptor.bind(this)
 
@@ -253,7 +254,7 @@ fun IrBuilderWithScope.irCall(irFunction: IrFunction, typeArguments: List<IrType
 internal fun irCall(startOffset: Int, endOffset: Int, irFunction: IrFunction, typeArguments: List<IrType>): IrCall =
         IrCallImpl(
                 startOffset, endOffset, irFunction.substitutedReturnType(typeArguments),
-                irFunction.symbol, irFunction.descriptor.substitute(typeArguments), typeArguments.size
+                irFunction.symbol, typeArguments.size
         ).apply {
             typeArguments.forEachIndexed { index, irType ->
                 this.putTypeArgument(index, irType)
@@ -367,6 +368,7 @@ fun createField(
             Visibilities.PRIVATE,
             !isMutable,
             false,
+            false,
             false
     ).apply {
         it.bind(this)
@@ -392,8 +394,6 @@ fun IrValueParameter.copy(newDescriptor: ParameterDescriptor): IrValueParameter 
             varargElementType
     )
 }
-
-val IrTypeArgument.typeOrNull: IrType? get() = (this as? IrTypeProjection)?.type
 
 val IrType.isSimpleTypeWithQuestionMark: Boolean
     get() = this is IrSimpleType && this.hasQuestionMark

@@ -73,7 +73,8 @@ class StubIrBridgeBuilder(
 
         override fun visitClass(element: ClassStub, owner: StubContainer?) {
             element.annotations.filterIsInstance<AnnotationStub.ObjC.ExternalClass>().firstOrNull()?.let {
-                if (it.protocolGetter.isNotEmpty() && element.origin is StubOrigin.ObjCProtocol) {
+                val origin = element.origin
+                if (it.protocolGetter.isNotEmpty() && origin is StubOrigin.ObjCProtocol && !origin.isMeta) {
                     val protocol = (element.origin as StubOrigin.ObjCProtocol).protocol
                     // TODO: handle the case when protocol getter stub can't be compiled.
                     generateProtocolGetter(it.protocolGetter, protocol)
@@ -327,7 +328,6 @@ class StubIrBridgeBuilder(
         val bridgeArguments = mutableListOf<TypedKotlinValue>()
         var isVararg = false
         val owner = origin.constructor.owner
-        var offset = 0
 
         bridgeArguments.add(TypedKotlinValue(PointerType(VoidType), "ptr"))
 
@@ -351,10 +351,7 @@ class StubIrBridgeBuilder(
                     parameterName
                 }
             }
-            if (parameter.type !is ContextAllocationStubType) // TODO: think again
-                bridgeArguments += TypedKotlinValue(origin.constructor.parameters[index - offset].type, bridgeArgument)
-            else
-                offset = 1
+            bridgeArguments += TypedKotlinValue(origin.constructor.parameters[index - 1].type, bridgeArgument)
         }
         // TODO: Improve assertion message.
         assert(!isVararg || context.platform != KotlinPlatform.NATIVE) {

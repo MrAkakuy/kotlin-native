@@ -15,6 +15,7 @@ import org.gradle.api.execution.TaskExecutionListener
 import org.jetbrains.kotlin.gradle.plugin.KotlinTargetPreset
 import org.jetbrains.kotlin.gradle.plugin.mpp.NativeBuildType
 import org.jetbrains.kotlin.gradle.tasks.KotlinNativeLink
+import org.jetbrains.kotlin.konan.target.HostManager
 import org.jetbrains.report.*
 import org.jetbrains.report.json.*
 import java.nio.file.Paths
@@ -128,26 +129,32 @@ fun mergeReports(reports: List<File>): String {
     }
 }
 
-fun getCompileOnlyBenchmarksOpts(project: Project, defaultCompilerOpts: List<String>) =
-        (project.findProperty("nativeBuildType") as String?)?.let {
-            if (it.equals("RELEASE", true))
-                listOf("-opt")
-            else if (it.equals("DEBUG", true))
-                listOf("-g")
-            else listOf()
-        } ?: defaultCompilerOpts
+fun getCompileOnlyBenchmarksOpts(project: Project, defaultCompilerOpts: List<String>): List<String> {
+    val dist = project.file(project.findProperty("kotlin.native.home") ?: "dist")
+    val useCache = !project.hasProperty("disableCompilerCaches")
+    val cacheOption = "-Xcache-directory=$dist/klib/cache/${HostManager.host.name}-gSTATIC"
+            .takeIf { useCache && PlatformInfo.isMac() } // TODO: remove target condition when we have cache support for other targets.
+    return (project.findProperty("nativeBuildType") as String?)?.let {
+        if (it.equals("RELEASE", true))
+            listOf("-opt")
+        else if (it.equals("DEBUG", true))
+            listOfNotNull("-g", cacheOption)
+        else listOf()
+    } ?: defaultCompilerOpts + listOfNotNull(cacheOption?.takeIf { !defaultCompilerOpts.contains("-opt") })
+}
 
 // Find file with set name in directory.
 fun findFile(fileName: String, directory: String): String? =
     File(directory).walkBottomUp().find { it.name == fileName }?.getAbsolutePath()
 
-fun uploadFileToBintray(url: String, project: String, version: String, packageName: String, bintrayFilePath: String,
-                        filePath: String, username: String? = null, password: String? = null) {
-    val uploadUrl = "$url/$project/$packageName/$version/$bintrayFilePath?publish=1"
-    sendUploadRequest(uploadUrl, filePath, username, password)
+fun uploadFileToArtifactory(url: String, project: String, artifactoryFilePath: String,
+                        filePath: String, password: String) {
+    val uploadUrl = "$url/$project/$artifactoryFilePath"
+    sendUploadRequest(uploadUrl, filePath, extraHeaders = listOf(Pair("X-JFrog-Art-Api", password)))
 }
 
-fun sendUploadRequest(url: String, fileName: String, username: String? = null, password: String? = null) {
+fun sendUploadRequest(url: String, fileName: String, username: String? = null, password: String? = null,
+                      extraHeaders: List<Pair<String, String>> = emptyList()) {
     val uploadingFile = File(fileName)
     val connection = URL(url).openConnection() as HttpURLConnection
     connection.doOutput = true
@@ -158,7 +165,9 @@ fun sendUploadRequest(url: String, fileName: String, username: String? = null, p
         val auth = Base64.getEncoder().encode((username + ":" + password).toByteArray()).toString(Charsets.UTF_8)
         connection.addRequestProperty("Authorization", "Basic $auth")
     }
-
+    extraHeaders.forEach {
+        connection.addRequestProperty(it.first, it.second)
+    }
     try {
         connection.connect()
         BufferedOutputStream(connection.outputStream).use { output ->

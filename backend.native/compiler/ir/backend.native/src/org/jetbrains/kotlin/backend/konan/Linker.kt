@@ -5,6 +5,8 @@ import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.target.CompilerOutputKind
 import org.jetbrains.kotlin.konan.target.Family
 import org.jetbrains.kotlin.konan.target.LinkerOutputKind
+import org.jetbrains.kotlin.backend.konan.files.renameAtomic
+import org.jetbrains.kotlin.konan.library.KonanLibrary
 
 internal fun determineLinkerOutput(context: Context): LinkerOutputKind =
         when (context.config.produce) {
@@ -33,9 +35,35 @@ internal class Linker(val context: Context) {
 
     fun link(objectFiles: List<ObjectFile>) {
         val nativeDependencies = context.llvm.nativeDependenciesToLink
-        val includedBinaries = nativeDependencies.map { it.includedPaths }.flatten()
-        val libraryProvidedLinkerFlags = nativeDependencies.map { it.linkerOpts }.flatten()
+
+        val includedBinariesLibraries = if (context.config.produce.isCache) {
+            context.config.librariesToCache
+        } else {
+            nativeDependencies.filterNot { context.config.cachedLibraries.isLibraryCached(it) }
+        }
+        val includedBinaries = includedBinariesLibraries.map { (it as? KonanLibrary)?.includedPaths.orEmpty() }.flatten()
+
+        val cachedLibraries = context.librariesWithDependencies
+                .filter { context.config.cachedLibraries.isLibraryCached(it) }
+        val libraryProvidedLinkerFlags = (nativeDependencies + cachedLibraries)
+                .distinct().map { it.linkerOpts }.flatten()
+
         runLinker(objectFiles, includedBinaries, libraryProvidedLinkerFlags)
+        renameOutput()
+    }
+
+    private fun renameOutput() {
+        if (context.config.produce.isCache) {
+            val outputFiles = context.config.outputFiles
+            val outputFile = java.io.File(outputFiles.mainFileMangled)
+            val outputDsymBundle = java.io.File(outputFiles.mainFileMangled + ".dSYM")
+            if (renameAtomic(outputFile.absolutePath, outputFiles.mainFile, /* replaceExisting = */ false))
+                outputDsymBundle.renameTo(java.io.File(outputFiles.mainFile + ".dSYM"))
+            else {
+                outputFile.delete()
+                outputDsymBundle.deleteRecursively()
+            }
+        }
     }
 
     private fun asLinkerArgs(args: List<String>): List<String> {
@@ -58,12 +86,20 @@ internal class Linker(val context: Context) {
     private fun runLinker(objectFiles: List<ObjectFile>,
                           includedBinaries: List<String>,
                           libraryProvidedLinkerFlags: List<String>): ExecutableFile? {
-        val frameworkLinkerArgs: List<String>
+        val additionalLinkerArgs: List<String>
         val executable: String
 
         if (context.config.produce != CompilerOutputKind.FRAMEWORK) {
-            frameworkLinkerArgs = emptyList()
-            executable = context.config.outputFile
+            additionalLinkerArgs = if (target.family.isAppleFamily) {
+                when (context.config.produce) {
+                    CompilerOutputKind.DYNAMIC_CACHE ->
+                        listOf("-install_name", context.config.outputFiles.mainFile)
+                    else -> listOf("-dead_strip")
+                }
+            } else {
+                emptyList()
+            }
+            executable = context.config.outputFiles.mainFileMangled
         } else {
             val framework = File(context.config.outputFile)
             val dylibName = framework.name.removeSuffix(".framework")
@@ -74,7 +110,7 @@ internal class Linker(val context: Context) {
                 Family.OSX -> "Versions/A/$dylibName"
                 else -> error(target)
             }
-            frameworkLinkerArgs = listOf("-install_name", "@rpath/${framework.name}/$dylibRelativePath")
+            additionalLinkerArgs = listOf("-dead_strip", "-install_name", "@rpath/${framework.name}/$dylibRelativePath")
             val dylibPath = framework.child(dylibRelativePath)
             dylibPath.parentFile.mkdirs()
             executable = dylibPath.absolutePath
@@ -92,9 +128,9 @@ internal class Linker(val context: Context) {
                     linkerArgs = asLinkerArgs(config.getNotNull(KonanConfigKeys.LINKER_ARGS)) +
                             BitcodeEmbedding.getLinkerOptions(context.config) +
                             caches.dynamic +
-                            libraryProvidedLinkerFlags + frameworkLinkerArgs,
+                            libraryProvidedLinkerFlags + additionalLinkerArgs,
                     optimize = optimize, debug = debug, kind = linkerOutput,
-                    outputDsymBundle = context.config.outputFile + ".dSYM",
+                    outputDsymBundle = context.config.outputFiles.mainFileMangled + ".dSYM",
                     needsProfileLibrary = needsProfileLibrary).forEach {
                 it.logWith(context::log)
                 it.execute()

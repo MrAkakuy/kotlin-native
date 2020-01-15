@@ -21,6 +21,8 @@ import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrEnumEntry
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.util.SymbolTable
+import org.jetbrains.kotlin.ir.util.isEnumClass
+import org.jetbrains.kotlin.ir.util.isEnumEntry
 import org.jetbrains.kotlin.ir.util.referenceFunction
 import org.jetbrains.kotlin.konan.target.*
 import org.jetbrains.kotlin.name.isChildOf
@@ -846,6 +848,7 @@ internal class CAdapterGenerator(val context: Context) : DeclarationDescriptorVi
         output("typedef unsigned long long ${prefix}_KULong;")
         output("typedef float              ${prefix}_KFloat;")
         output("typedef double             ${prefix}_KDouble;")
+        output("typedef float __attribute__ ((__vector_size__ (16))) ${prefix}_KVector128;")
         output("typedef void*              ${prefix}_KNativePtr;")
         output("struct ${prefix}_KType;")
         output("typedef struct ${prefix}_KType ${prefix}_KType;")
@@ -908,7 +911,7 @@ internal class CAdapterGenerator(val context: Context) : DeclarationDescriptorVi
         |KObjHeader* DerefStablePointer(void*, KObjHeader**) RUNTIME_NOTHROW;
         |void* CreateStablePointer(KObjHeader*) RUNTIME_NOTHROW;
         |void DisposeStablePointer(void*) RUNTIME_NOTHROW;
-        |int IsInstance(const KObjHeader*, const KTypeInfo*) RUNTIME_NOTHROW;
+        |${prefix}_KBoolean IsInstance(const KObjHeader*, const KTypeInfo*) RUNTIME_NOTHROW;
         |void EnterFrame(KObjHeader** start, int parameters, int count) RUNTIME_NOTHROW;
         |void LeaveFrame(KObjHeader** start, int parameters, int count) RUNTIME_NOTHROW;
         |void Kotlin_initRuntimeIfNeeded();
@@ -1026,6 +1029,7 @@ internal class CAdapterGenerator(val context: Context) : DeclarationDescriptorVi
             KonanPrimitiveType.FLOAT -> "${prefix}_KFloat"
             KonanPrimitiveType.DOUBLE -> "${prefix}_KDouble"
             KonanPrimitiveType.NON_NULL_NATIVE_PTR -> "void*"
+            KonanPrimitiveType.VECTOR128 -> "${prefix}_KVector128"
         }
     }
 

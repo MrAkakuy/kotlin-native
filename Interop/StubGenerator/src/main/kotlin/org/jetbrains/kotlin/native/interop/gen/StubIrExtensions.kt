@@ -55,10 +55,19 @@ val StubContainer.defaultMemberModality: MemberStubModality
     get() = when (this) {
         is SimpleStubContainer -> MemberStubModality.FINAL
         is ClassStub.Simple -> if (this.modality == ClassStubModality.INTERFACE) {
-            MemberStubModality.OPEN
+            MemberStubModality.ABSTRACT
         } else {
             MemberStubModality.FINAL
         }
         is ClassStub.Companion -> MemberStubModality.FINAL
         is ClassStub.Enum -> MemberStubModality.FINAL
     }
+
+/**
+ * Returns constructor that should be rendered in class header.
+ */
+val ClassStub.explicitPrimaryConstructor: ConstructorStub?
+    get() = functions.filterIsInstance<ConstructorStub>().firstOrNull(ConstructorStub::isPrimary)
+
+fun ClassStub.nestedName(): String =
+        classifier.relativeFqName.substringAfterLast('.')

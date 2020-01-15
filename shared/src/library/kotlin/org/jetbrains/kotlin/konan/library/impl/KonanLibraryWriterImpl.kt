@@ -20,14 +20,13 @@ class KonanLibraryLayoutForWriter(
     override val target: KonanTarget
 ) : KonanLibraryLayout, KotlinLibraryLayoutForWriter(libDir)
 
-
 /**
  * Requires non-null [target].
  */
 class KonanLibraryWriterImpl(
         libDir: File,
         moduleName: String,
-        versions: KonanLibraryVersioning,
+        versions: KotlinLibraryVersioning,
         target: KonanTarget,
         nopack: Boolean = false,
 
@@ -45,8 +44,8 @@ fun buildLibrary(
     included: List<String>,
     linkDependencies: List<KonanLibrary>,
     metadata: SerializedMetadata,
-    ir: SerializedIrModule,
-    versions: KonanLibraryVersioning,
+    ir: SerializedIrModule?,
+    versions: KotlinLibraryVersioning,
     target: KonanTarget,
     output: String,
     moduleName: String,
@@ -58,7 +57,9 @@ fun buildLibrary(
     val library = KonanLibraryWriterImpl(File(output), moduleName, versions, target, nopack)
 
     library.addMetadata(metadata)
-    library.addIr(ir)
+    if (ir != null) {
+        library.addIr(ir)
+    }
 
     natives.forEach {
         library.addNativeBitcode(it)

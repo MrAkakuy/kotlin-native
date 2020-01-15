@@ -6,6 +6,7 @@
 package kotlin.native.concurrent
 
 import kotlin.native.internal.ExportForCppRuntime
+import kotlin.native.identityHashCode
 import kotlin.reflect.KClass
 import kotlinx.cinterop.*
 
@@ -30,7 +31,7 @@ internal fun executeImpl(worker: Worker, mode: TransferMode, producer: () -> Any
         Future<Any?>(executeInternal(worker.id, mode.value, producer, job))
 
 @SymbolName("Kotlin_Worker_startInternal")
-external internal fun startInternal(errorReporting: Boolean): Int
+external internal fun startInternal(errorReporting: Boolean, name: String?): Int
 
 @SymbolName("Kotlin_Worker_currentInternal")
 external internal fun currentInternal(): Int
@@ -47,6 +48,12 @@ external internal fun executeAfterInternal(id: Int, operation: () -> Unit, after
 
 @SymbolName("Kotlin_Worker_processQueueInternal")
 external internal fun processQueueInternal(id: Int): Boolean
+
+@SymbolName("Kotlin_Worker_parkInternal")
+external internal fun parkInternal(id: Int, timeoutMicroseconds: Long, process: Boolean): Boolean
+
+@SymbolName("Kotlin_Worker_getNameInternal")
+external internal fun getWorkerNameInternal(id: Int): String?
 
 @ExportForCppRuntime
 internal fun ThrowWorkerUnsupported(): Unit =
