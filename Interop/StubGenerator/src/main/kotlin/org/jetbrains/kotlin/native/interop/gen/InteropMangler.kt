@@ -38,6 +38,8 @@ interface InteropMangler {
     val StructDecl.uniqueSymbolName: String
     val EnumDef.uniqueSymbolName: String
     val EnumConstant.uniqSymbolName: String
+    val CxxClassDecl.uniqueSymbolName: String
+    val CxxClassConstructorDecl.uniqueSymbolName: String
     val ObjCClass.uniqueSymbolName: String
     val ObjCClass.metaClassUniqueSymbolName: String
     val ObjCProtocol.uniqueSymbolName: String
@@ -66,6 +68,12 @@ class KotlinLikeInteropMangler(context: ManglingContext = ManglingContext.Empty)
 
     override val EnumConstant.uniqSymbolName: String
         get() = "enumconstant:$prefix$name"
+
+    override val CxxClassDecl.uniqueSymbolName: String
+        get() = "cxxclassdecl:$prefix$spelling"
+
+    override val CxxClassConstructorDecl.uniqueSymbolName: String // TODO: unique name
+        get() = "cxxclassconstructordecl:$prefix${owner.spelling}constructor"
 
     override val ObjCClass.uniqueSymbolName: String
         get() = "objcclass:$prefix$name"
@@ -101,5 +109,5 @@ class KotlinLikeInteropMangler(context: ManglingContext = ManglingContext.Empty)
         get() = "globaldecl:$prefix$name"
 
     private val FunctionDecl.functionName: String
-        get() = name
+        get() = if (this is CxxClassFunctionDecl) owner.spelling + name else name
 }

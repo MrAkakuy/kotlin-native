@@ -99,6 +99,10 @@ sealed class StubOrigin {
          */
         object DefaultConstructor : Synthetic()
 
+        class CxxClassReinterpretNativePointed(val classDecl: CxxClassDecl, val classifier: Classifier) : Synthetic()
+
+        class CxxClassReinterpretCPointer(val classDecl: CxxClassDecl, val classifier: Classifier) : Synthetic()
+
         /**
          * CEnum.Companion.byValue.
          */
@@ -374,7 +378,7 @@ class FunctionParameterStub(
         val type: StubType,
         override val annotations: List<AnnotationStub> = emptyList(),
         val isVararg: Boolean = false,
-        val origin: StubOrigin = StubOrigin.Synthetic,
+        //val origin: StubOrigin = StubOrigin.Synthetic,
         val defaultValue: String? = null
 ) : AnnotationHolder
 
@@ -492,8 +496,7 @@ class FunctionStub(
         val receiver: ReceiverParameterStub?,
         val modality: MemberStubModality,
         val typeParameters: List<TypeParameterStub> = emptyList(),
-        val isOverride: Boolean = false,
-        val kotlinFunctionAlias: String? = null
+        val isOverride: Boolean = false
 ) : StubElementWithOrigin, FunctionalStub {
 
     override fun <T, R> accept(visitor: StubIrVisitor<T, R>, data: T) =
@@ -505,7 +508,7 @@ class ConstructorStub(
         override val annotations: List<AnnotationStub> = emptyList(),
         val isPrimary: Boolean,
         val visibility: VisibilityModifier = VisibilityModifier.PUBLIC,
-        override val origin: StubOrigin = StubOrigin.SyntheticDefaultConstructor,
+        override val origin: StubOrigin = StubOrigin.Synthetic.DefaultConstructor,
         val isDefault: Boolean = true,
         val chainCall: List<ValueStub>? = null,
         val chainCallType: ChainCallType = ChainCallType.SUPER

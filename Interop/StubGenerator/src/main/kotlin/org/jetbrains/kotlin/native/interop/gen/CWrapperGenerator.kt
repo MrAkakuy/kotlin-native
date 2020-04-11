@@ -55,7 +55,7 @@ internal class CWrappersGenerator(private val context: StubIrContext) {
                 val originParameters = if (owner != null && !function.isStatic)
                     listOf(Parameter(
                             "ptr",
-                            CxxClassPointerType(CxxClassType(owner)),
+                            PointerType(VoidType, false),//CxxClassPointerType(CxxClassType(owner)),
                             false)
                     ) + function.parameters
                 else
@@ -70,7 +70,7 @@ internal class CWrappersGenerator(private val context: StubIrContext) {
                         if (function.isStatic)
                             "${owner.spelling}::${function.name}(${parameters.joinToString { it.name }});"
                         else
-                            "(${parameters.first().name})->${function.name}(${parameters.drop(1).joinToString { it.name }});"
+                            "((${owner.spelling} *) ${parameters.first().name})->${function.name}(${parameters.drop(1).joinToString { it.name }});"
                     }
                     else -> "${function.name}(${parameters.joinToString { it.name }});"
                 }

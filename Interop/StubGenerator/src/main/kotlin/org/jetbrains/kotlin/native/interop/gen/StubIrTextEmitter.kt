@@ -207,7 +207,10 @@ class StubIrTextEmitter(
                     out("$header = values().find { it.value == value }!!")
                 owner != null && owner.isInterface -> out(header)
                 element.modality == MemberStubModality.ABSTRACT -> out(header)
-                element.kotlinFunctionAlias != null -> out("$header = ${element.kotlinFunctionAlias}")
+                element.origin is StubOrigin.Synthetic.CxxClassReinterpretCPointer ->
+                    out("$header = ${element.origin.classifier.topLevelName}(ptr.reinterpret<CStructVar>().pointed)")
+                element.origin is StubOrigin.Synthetic.CxxClassReinterpretNativePointed ->
+                    out("$header = ${element.origin.classifier.topLevelName}(ptd.reinterpret<CStructVar>())")
                 else -> block(header) {
                     functionalBridgeBodies.getValue(element).forEach(out)
                 }

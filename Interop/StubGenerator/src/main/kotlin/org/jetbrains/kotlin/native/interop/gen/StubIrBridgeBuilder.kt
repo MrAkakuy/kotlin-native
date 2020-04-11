@@ -96,7 +96,8 @@ class StubIrBridgeBuilder(
                     element.origin is StubOrigin.Synthetic.EnumByValue -> { }
                     owner != null && owner.isInterface -> { }
                     element.modality == MemberStubModality.ABSTRACT -> { }
-                    element.kotlinFunctionAlias != null -> { }
+                    element.origin is StubOrigin.Synthetic.CxxClassReinterpretCPointer -> { }
+                    element.origin is StubOrigin.Synthetic.CxxClassReinterpretNativePointed -> { }
                     else -> generateBridgeBody(element)
                 }
             } catch (e: Throwable) {
@@ -268,7 +269,7 @@ class StubIrBridgeBuilder(
                     ?: false
 
     private fun generateBridgeBody(function: FunctionStub) {
-        assert(context.platform == KotlinPlatform.JVM) { "Function ${function.name} was not marked as external." }
+        //assert(context.platform == KotlinPlatform.JVM) { "Function ${function.name} was not marked as external." }
         assert(function.origin is StubOrigin.Function) { "Can't create bridge for ${function.name}" }
         val origin = function.origin as StubOrigin.Function
         val bodyGenerator = KotlinCodeBuilder(scope = kotlinFile)
@@ -337,6 +338,8 @@ class StubIrBridgeBuilder(
         bridgeArguments.add(TypedKotlinValue(PointerType(VoidType), "ptr"))
 
         constructor.parameters.forEachIndexed { index, parameter ->
+            if (index == 0)
+                return@forEachIndexed
             isVararg = isVararg or parameter.isVararg
             val parameterName = parameter.name.asSimpleName()
             val bridgeArgument = when {

@@ -499,7 +499,8 @@ internal class CxxClassStubBuilder(
                 val offset = field.offset / 8
                 val fieldRefType = context.mirror(field.type)
                 val unwrappedFieldType = field.type.unwrapTypedefs()
-                val origin = StubOrigin.Synthetic
+                val origin = StubOrigin.StructMember(field)
+                val fieldName = mangleSimple(field.name)
                 if (unwrappedFieldType is ArrayType) {
                     val type = (fieldRefType as TypeMirror.ByValue).valueType
                     val annotations = if (platform == KotlinPlatform.JVM) {
@@ -509,21 +510,41 @@ internal class CxxClassStubBuilder(
                     } else {
                         emptyList()
                     }
-                    val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.ArrayMemberAt(offset))
+                    val getter = when (context.generationMode) {
+                        GenerationMode.SOURCE_CODE -> PropertyAccessor.Getter.ArrayMemberAt(offset)
+                        GenerationMode.METADATA -> PropertyAccessor.Getter.ExternalGetter(listOf(AnnotationStub.CStruct.ArrayMemberAt(offset)))
+                    }
+                    val kind = PropertyStub.Kind.Val(getter)
                     // TODO: Should receiver be added?
-                    PropertyStub(field.name, type.toStubIrType(), kind, annotations = annotations, origin = origin)
+                    PropertyStub(fieldName, type.toStubIrType(), kind, annotations = annotations, origin = origin)
                 } else {
                     val pointedType = fieldRefType.pointedType.toStubIrType()
                     val pointedTypeArgument = TypeArgumentStub(pointedType)
                     if (fieldRefType is TypeMirror.ByValue) {
-                        val kind = PropertyStub.Kind.Var(
-                                PropertyAccessor.Getter.MemberAt(offset, typeArguments = listOf(pointedTypeArgument), hasValueAccessor = true),
-                                PropertyAccessor.Setter.MemberAt(offset, typeArguments = listOf(pointedTypeArgument))
-                        )
-                        PropertyStub(field.name, fieldRefType.argType.toStubIrType(), kind, origin = origin)
-                    } else {
-                        val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.MemberAt(offset, hasValueAccessor = false))
+                        val getter: PropertyAccessor.Getter
+                        val setter: PropertyAccessor.Setter
+                        when (context.generationMode) {
+                            GenerationMode.SOURCE_CODE -> {
+                                getter = PropertyAccessor.Getter.MemberAt(offset, typeArguments = listOf(pointedTypeArgument), hasValueAccessor = true)
+                                setter = PropertyAccessor.Setter.MemberAt(offset, typeArguments = listOf(pointedTypeArgument))
+                            }
+                            GenerationMode.METADATA -> {
+                                getter = PropertyAccessor.Getter.ExternalGetter(listOf(AnnotationStub.CStruct.MemberAt(offset)))
+                                setter = PropertyAccessor.Setter.ExternalSetter(listOf(AnnotationStub.CStruct.MemberAt(offset)))
+                            }
+                        }
+                        val kind = PropertyStub.Kind.Var(getter, setter)
+                        PropertyStub(fieldName, fieldRefType.argType.toStubIrType(), kind, origin = origin)
+                    } else if (unwrappedFieldType is CxxClassType) {
+                        val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.CxxClassMemberAt(offset, pointedType))
                         PropertyStub(field.name, pointedType, kind, origin = origin)
+                    } else {
+                        val accessor = when (context.generationMode) {
+                            GenerationMode.SOURCE_CODE -> PropertyAccessor.Getter.MemberAt(offset, hasValueAccessor = false)
+                            GenerationMode.METADATA -> PropertyAccessor.Getter.ExternalGetter(listOf(AnnotationStub.CStruct.MemberAt(offset)))
+                        }
+                        val kind = PropertyStub.Kind.Val(accessor)
+                        PropertyStub(fieldName, pointedType, kind, origin = origin)
                     }
                 }
             } catch (e: Throwable) {
@@ -536,12 +557,22 @@ internal class CxxClassStubBuilder(
             val typeInfo = typeMirror.info
             val kotlinType = typeMirror.argType
             val signed = field.type.isIntegerTypeSigned()
-            val readBits = PropertyAccessor.Getter.ReadBits(field.offset, field.size, signed)
-            val writeBits = PropertyAccessor.Setter.WriteBits(field.offset, field.size)
-            context.bridgeComponentsBuilder.getterToBridgeInfo[readBits] = BridgeGenerationInfo("", typeInfo)
-            context.bridgeComponentsBuilder.setterToBridgeInfo[writeBits] = BridgeGenerationInfo("", typeInfo)
-            val kind = PropertyStub.Kind.Var(readBits, writeBits)
-            PropertyStub(field.name, kotlinType.toStubIrType(), kind, origin = StubOrigin.Synthetic)
+            val fieldName = mangleSimple(field.name)
+            val kind = when (context.generationMode) {
+                GenerationMode.SOURCE_CODE -> {
+                    val readBits = PropertyAccessor.Getter.ReadBits(field.offset, field.size, signed)
+                    val writeBits = PropertyAccessor.Setter.WriteBits(field.offset, field.size)
+                    context.bridgeComponentsBuilder.getterToBridgeInfo[readBits] = BridgeGenerationInfo("", typeInfo)
+                    context.bridgeComponentsBuilder.setterToBridgeInfo[writeBits] = BridgeGenerationInfo("", typeInfo)
+                    PropertyStub.Kind.Var(readBits, writeBits)
+                }
+                GenerationMode.METADATA -> {
+                    val readBits = PropertyAccessor.Getter.ExternalGetter(listOf(AnnotationStub.CStruct.BitField(field.offset, field.size)))
+                    val writeBits = PropertyAccessor.Setter.ExternalSetter(listOf(AnnotationStub.CStruct.BitField(field.offset, field.size)))
+                    PropertyStub.Kind.Var(readBits, writeBits)
+                }
+            }
+            PropertyStub(fieldName, kotlinType.toStubIrType(), kind, origin = StubOrigin.StructMember(field))
         }
 
         val functions: List<FunctionStub> = def.functions.flatMap {
@@ -555,20 +586,17 @@ internal class CxxClassStubBuilder(
             ConstructorStubBuilder(context, it, classifier).build()
         }.filterIsInstance<ConstructorStub>()
 
+        val chainConstructorParameters = listOf(
+            FunctionParameterStub("body", context.platform.getRuntimeType("CStructVar")),
+            FunctionParameterStub("context", context.platform.getRuntimeType("NativePlacement", nullable = true), defaultValue = "null")
+        )
         val chainConstructor = ConstructorStub(
-                parameters = listOf(
-                        FunctionParameterStub("body", context.platform.getRuntimeType("CStructVar")),
-                        FunctionParameterStub(
-                                "context",
-                                context.platform.getRuntimeType("NativePlacement", nullable = true),
-                                defaultValue = "null"
-                        )
-                ),
+                parameters = chainConstructorParameters,
                 annotations = listOf(AnnotationStub.PublishedApi()),
                 isPrimary = false,
-                origin = StubOrigin.SyntheticDefaultConstructor,
+                origin = StubOrigin.Synthetic.DefaultConstructor,
                 isDefault = true,
-                chainCall = listOf(StringConstantStub("body"), StringConstantStub("context")),
+                chainCall = chainConstructorParameters.map { GetConstructorParameter(it) },
                 chainCallType = ConstructorStub.ChainCallType.SUPER,
                 visibility = VisibilityModifier.INTERNAL
         )
@@ -577,10 +605,11 @@ internal class CxxClassStubBuilder(
                 returnType = KotlinTypes.unit.toStubIrType(),
                 parameters = emptyList(),
                 origin = StubOrigin.Function(def.destructor),
-                annotations = listOf(AnnotationStub.CCall.Symbol(context.generateNextUniqueId("knifunptr_") + "_destructor")),
-                external = true,
+                annotations = emptyList(),//listOf(AnnotationStub.CCall.Symbol(context.generateNextUniqueId("knifunptr_") + "_destructor")),
+                external = false,//true,
                 receiver = null,
-                modality = MemberStubModality.OVERRIDE
+                modality = MemberStubModality.OPEN,
+                isOverride = true
         )
         val reinterpretCPointer = when (modality) {
             ClassStubModality.ABSTRACT -> null
@@ -594,11 +623,10 @@ internal class CxxClassStubBuilder(
                                         platform.getRuntimeType("CPointer", typeArguments = listOf(TypeArgument.StarProjection))
                                 )
                         ),
-                        origin = StubOrigin.Synthetic,
+                        origin = StubOrigin.Synthetic.CxxClassReinterpretCPointer(decl, classifier),
                         annotations = emptyList(),
                         receiver = null,
-                        modality = MemberStubModality.FINAL,
-                        kotlinFunctionAlias = "${classifier.topLevelName}(ptr.reinterpret<CStructVar>().pointed)"
+                        modality = MemberStubModality.FINAL
                 )
             }
         }
@@ -609,11 +637,10 @@ internal class CxxClassStubBuilder(
                         name = "reinterpret",
                         returnType = ClassifierStubType(classifier),
                         parameters = listOf(FunctionParameterStub("ptd", platform.getRuntimeType("NativePointed"))),
-                        origin = StubOrigin.Synthetic,
+                        origin = StubOrigin.Synthetic.CxxClassReinterpretNativePointed(decl, classifier),
                         annotations = emptyList(),
                         receiver = null,
-                        modality = MemberStubModality.FINAL,
-                        kotlinFunctionAlias = "${classifier.topLevelName}(ptd.reinterpret<CStructVar>())"
+                        modality = MemberStubModality.FINAL
                 )
             }
         }
@@ -834,19 +861,22 @@ internal class FunctionStubBuilder(
         val modality = if (func is CxxClassFunctionDecl) {
             when {
                 func.isPureVirtual -> MemberStubModality.ABSTRACT
-                func.isVirtual -> {
-                    val proto = func.owner.bases.getOrNull(0)?.findFunctionProto(func)
-                    if (proto != null) MemberStubModality.OVERRIDE else MemberStubModality.OPEN
-                }
+                func.isVirtual -> MemberStubModality.OPEN
                 else -> MemberStubModality.FINAL
             }
         } else MemberStubModality.FINAL
+
+        // TODO: context.isOverloading (CxxClass scope)
+        val isOverride = if (func is CxxClassFunctionDecl) {
+            func.owner.bases.getOrNull(0)?.findFunctionProto(func) != null
+        } else
+            false
 
 
         val annotations: List<AnnotationStub>
         val mustBeExternal: Boolean
 
-        if (context.platform == KotlinPlatform.JVM || modality == MemberStubModality.ABSTRACT) {
+        if (context.platform == KotlinPlatform.JVM || modality == MemberStubModality.ABSTRACT || (func as? CxxClassFunctionDecl)?.owner != null) {
             annotations = emptyList()
             mustBeExternal = false
         } else {
@@ -862,7 +892,8 @@ internal class FunctionStubBuilder(
                 annotations = annotations,
                 external = mustBeExternal,
                 receiver = null,
-                modality = modality
+                modality = modality,
+                isOverride = isOverride
         )
         return listOf(functionStub)
     }

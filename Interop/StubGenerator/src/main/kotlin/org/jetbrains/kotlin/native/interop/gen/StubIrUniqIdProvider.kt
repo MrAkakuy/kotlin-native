@@ -22,6 +22,8 @@ internal class StubIrUniqIdProvider(private val context: ManglingContext) {
             is StubOrigin.ObjCMethod -> function.origin.method.uniqueSymbolName
             is StubOrigin.ObjCCategoryInitMethod -> "${function.origin.method.uniqueSymbolName}#Create"
             is StubOrigin.Synthetic.EnumByValue -> "${function.origin.enum.uniqueSymbolName}#ByValue"
+            is StubOrigin.Synthetic.CxxClassReinterpretNativePointed -> "${function.origin.classDecl.uniqueSymbolName}#InterpretPointed"
+            is StubOrigin.Synthetic.CxxClassReinterpretCPointer -> "${function.origin.classDecl.uniqueSymbolName}#InterpretPointer"
             else -> error("Unexpected origin ${function.origin} for function ${function.name}.")
         }.toUniqId()
     }
@@ -66,6 +68,7 @@ internal class StubIrUniqIdProvider(private val context: ManglingContext) {
         }
         is StubOrigin.Struct -> origin.struct.uniqueSymbolName
         is StubOrigin.Enum -> origin.enum.uniqueSymbolName
+        is StubOrigin.CxxClass -> origin.cxxClass.uniqueSymbolName
         is StubOrigin.VarOf -> "${uniqSymbolNameForClass(origin.typeOrigin)}#Var"
         else -> null
     }
@@ -82,6 +85,8 @@ internal class StubIrUniqIdProvider(private val context: ManglingContext) {
         is StubOrigin.Synthetic.DefaultConstructor -> "${context.prefix}#Constructor"
         is StubOrigin.Enum -> "${origin.enum.uniqueSymbolName}#Constructor"
         is StubOrigin.Struct -> "${origin.struct.uniqueSymbolName}#Constructor"
+        is StubOrigin.CxxClass -> "${origin.cxxClass.uniqueSymbolName}#Constructor"
+        is StubOrigin.Constructor -> "${origin.constructor.uniqueSymbolName}#Constructor"
         is StubOrigin.ObjCMethod -> "${origin.method.uniqueSymbolName}#Constructor"
         else -> null
     }

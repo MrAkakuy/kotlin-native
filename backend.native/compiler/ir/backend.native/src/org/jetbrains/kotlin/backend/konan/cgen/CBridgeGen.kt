@@ -110,8 +110,6 @@ private fun KotlinToCCallBuilder.buildKotlinBridgeCall(transformCall: (IrMemberA
         )
 
 internal fun KotlinStubs.generateCCall(expression: IrCall, builder: IrBuilderWithScope, isInvoke: Boolean): IrExpression {
-    require(expression.dispatchReceiver == null)
-
     val callBuilder = KotlinToCCallBuilder(builder, this, isObjCMethod = false)
 
     val callee = expression.symbol.owner as IrSimpleFunction
@@ -122,6 +120,9 @@ internal fun KotlinStubs.generateCCall(expression: IrCall, builder: IrBuilderWit
     val targetFunctionName: String
 
     if (isInvoke) {
+        // TODO: add dispatch receiver
+        require(expression.dispatchReceiver == null)
+
         targetPtrParameter = callBuilder.passThroughBridge(
                 expression.extensionReceiver!!,
                 symbols.interopCPointer.typeWithStarProjections,
@@ -141,6 +142,20 @@ internal fun KotlinStubs.generateCCall(expression: IrCall, builder: IrBuilderWit
         require(expression.extensionReceiver == null)
         targetPtrParameter = null
         targetFunctionName = this.getUniqueCName("target")
+
+        when (expression.dispatchReceiver) {
+            is IrGetValue -> {
+                callBuilder.addArgument(
+                        expression.dispatchReceiver!!,
+                        type = (expression.dispatchReceiver as IrGetValue).type,
+                        variadic = false,
+                        parameter = null
+                )
+            }
+            is IrGetObjectValue -> { }
+            null -> { }
+            else -> error("Unknown dispatchReceiver")
+        }
 
         val arguments = (0 until expression.valueArgumentsCount).map {
             expression.getValueArgument(it)
@@ -824,6 +839,10 @@ private fun KotlinStubs.mapType(
         TrivialValuePassing(type, CTypes.voidPtr)
     }
 
+    type.classOrNull?.isSubtypeOfClass(symbols.cxxClass) == true -> {
+        CxxClassValuePassing(type.classOrNull!!.owner)
+    }
+
     type.isFunction() -> if (variadic){
         reportUnsupportedType("not supported as variadic argument")
     } else {
@@ -1081,6 +1100,38 @@ private class CEnumValuePassing(
 
     override fun bridgedToC(expression: String): String = with(baseValuePassing) { bridgedToC(expression) }
     override fun cToBridged(expression: String): String = with(baseValuePassing) { cToBridged(expression) }
+}
+
+private class CxxClassValuePassing(
+        private val kotlinClass: IrClass
+) : ValuePassing {
+    override val cType: CType get() = CTypes.voidPtr
+
+    override fun KotlinToCCallBuilder.passValue(expression: IrExpression): CExpression? {
+        val cBridgeValue = passThroughBridge(
+                cxxClassToPointer(expression),
+                symbols.interopCPointer.typeWithStarProjections,
+                cType
+        ).name
+
+        return CExpression(cBridgeValue, cType)
+    }
+
+    override fun KotlinToCCallBuilder.returnValue(expression: String): IrExpression = with (irBuilder) {
+        //cFunctionBuilder.setReturnType(cType)
+        //bridgeBuilder.setReturnType(symbols.interopCPointer.typeWithStarProjections, CTypes.voidPtr)
+
+        TODO("Not yet implemented")
+    }
+
+    override fun CCallbackBuilder.returnValue(expression: IrExpression) {
+        TODO("Not yet implemented")
+    }
+
+    override fun CCallbackBuilder.receiveValue(): IrExpression {
+        TODO("Not yet implemented")
+    }
+
 }
 
 private class ObjCReferenceValuePassing(
@@ -1446,6 +1497,23 @@ private fun KotlinToCCallBuilder.cValuesRefToPointer(
         irCall(getPointerFunction).apply {
             dispatchReceiver = it
             putValueArgument(0, bridgeCallBuilder.getMemScope())
+        }
+    }
+}
+
+private fun KotlinToCCallBuilder.cxxClassToPointer(
+        value: IrExpression
+): IrExpression {
+    val getCxxClassRawPtr = symbols.cxxClass.owner
+            .properties
+            .single { it.name.asString() == "rawPtr" }
+            .getter!!
+
+    return irBuilder.irSafeTransform(value) {
+        irCall(symbols.interopInterpretCPointer).apply {
+            putValueArgument(0, irCall(getCxxClassRawPtr).apply {
+                dispatchReceiver = it
+            })
         }
     }
 }

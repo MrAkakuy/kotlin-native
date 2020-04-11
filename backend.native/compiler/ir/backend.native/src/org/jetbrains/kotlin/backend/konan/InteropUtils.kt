@@ -48,6 +48,8 @@ internal class InteropBuiltIns(builtIns: KonanBuiltIns) {
     val cPrimitiveVar = this.packageScope.getContributedClass("CPrimitiveVar")
     val cPrimitiveVarType = cPrimitiveVar.defaultType.memberScope.getContributedClass("Type")
 
+    val cxxClass = this.packageScope.getContributedClass("CxxClass")
+
     val nativeMemUtils = this.packageScope.getContributedClass("nativeMemUtils")
 
     val allocType = this.packageScope.getContributedFunctions("alloc")
