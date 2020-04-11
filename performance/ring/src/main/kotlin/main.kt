@@ -174,6 +174,7 @@ class RingLauncher : Launcher() {
                     "ParameterNotNull.invokeEightArgsWithoutNullCheck" to BenchmarkEntryWithInit.create(::ParameterNotNullAssertionBenchmark, { invokeEightArgsWithoutNullCheck() }),
                     "PrimeList.calcDirect" to BenchmarkEntryWithInit.create(::PrimeListBenchmark, { calcDirect() }),
                     "PrimeList.calcEratosthenes" to BenchmarkEntryWithInit.create(::PrimeListBenchmark, { calcEratosthenes() }),
+                    "Singleton.access" to BenchmarkEntryWithInit.create(::SingletonBenchmark, { access() }),
                     "String.stringConcat" to BenchmarkEntryWithInit.create(::StringBenchmark, { stringConcat() }),
                     "String.stringConcatNullable" to BenchmarkEntryWithInit.create(::StringBenchmark, { stringConcatNullable() }),
                     "String.stringBuilderConcat" to BenchmarkEntryWithInit.create(::StringBenchmark, { stringBuilderConcat() }),
@@ -205,7 +206,8 @@ class RingLauncher : Launcher() {
                     "GraphSolver.solve" to BenchmarkEntryWithInit.create(::GraphSolverBenchmark, { solve() }),
                     "Casts.classCast" to BenchmarkEntryWithInit.create(::CastsBenchmark, { classCast() }),
                     "Casts.interfaceCast" to BenchmarkEntryWithInit.create(::CastsBenchmark, { interfaceCast() }),
-                    "LocalObjects.localArray" to BenchmarkEntryWithInit.create(::LocalObjectsBenchmark, { localArray() })
+                    "LocalObjects.localArray" to BenchmarkEntryWithInit.create(::LocalObjectsBenchmark, { localArray() }),
+                    "LinkedListWithAtomicsBenchmark" to BenchmarkEntryWithInit.create(::LinkedListWithAtomicsBenchmark, { ensureNext() })
             )
     )
 }

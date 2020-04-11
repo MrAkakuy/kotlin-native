@@ -115,11 +115,20 @@ void consolePrintf(const char* format, ...) {
   consoleWriteUtf8(buffer, rv);
 }
 
+void consoleErrorf(const char* format, ...) {
+  char buffer[1024];
+  va_list args;
+  va_start(args, format);
+  int rv = vsnprintf_impl(buffer, sizeof(buffer) - 1, format, args);
+  va_end(args);
+  consoleErrorUtf8(buffer, rv);
+}
+
 // Thread execution.
 #if !KONAN_NO_THREADS
 
 pthread_key_t terminationKey;
-pthread_once_t terminationKeyOnceControl =  PTHREAD_ONCE_INIT;
+pthread_once_t terminationKeyOnceControl = PTHREAD_ONCE_INIT;
 
 typedef void (*destructor_t)(void*);
 
@@ -140,7 +149,19 @@ static void onThreadExitCallback(void* value) {
   pthread_setspecific(terminationKey, nullptr);
 }
 
+#if KONAN_LINUX
+static pthread_key_t dummyKey;
+#endif
 static void onThreadExitInit() {
+#if KONAN_LINUX
+  // Due to glibc bug we have to create first key as dummy, to avoid
+  // conflicts with potentially uninitialized dlfcn error key.
+  // https://code.woboq.org/userspace/glibc/dlfcn/dlerror.c.html#237
+  // As one may see, glibc checks value of the key even if it was not inited (and == 0),
+  // and so data associated with our legit key (== 0 as being the first one) is used.
+  // Other libc are not affected, as usually == 0 pthread key is impossible.
+  pthread_key_create(&dummyKey, nullptr);
+#endif
   pthread_key_create(&terminationKey, onThreadExitCallback);
 }
 
@@ -215,15 +236,23 @@ extern "C" void* dlcalloc(size_t, size_t);
 extern "C" void dlfree(void*);
 #define calloc_impl dlcalloc
 #define free_impl dlfree
+#define calloc_aligned_impl(count, size, alignment) dlcalloc(count, size)
+
 #else
 extern "C" void* konan_calloc_impl(size_t, size_t);
 extern "C" void konan_free_impl(void*);
+extern "C" void* konan_calloc_aligned_impl(size_t count, size_t size, size_t alignment);
 #define calloc_impl konan_calloc_impl
 #define free_impl konan_free_impl
+#define calloc_aligned_impl konan_calloc_aligned_impl
 #endif
 
 void* calloc(size_t count, size_t size) {
   return calloc_impl(count, size);
+}
+
+void* calloc_aligned(size_t count, size_t size, size_t alignment) {
+  return calloc_aligned_impl(count, size, alignment);
 }
 
 void free(void* pointer) {

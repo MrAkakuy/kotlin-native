@@ -183,16 +183,34 @@ internal class KonanSymbols(
     val interopInterpretObjCPointerOrNull =
             symbolTable.referenceSimpleFunction(context.interopBuiltIns.interpretObjCPointerOrNull)
 
+    val interopInterpretNullablePointed =
+            symbolTable.referenceSimpleFunction(context.interopBuiltIns.interpretNullablePointed)
+
+    val interopInterpretCPointer =
+            symbolTable.referenceSimpleFunction(context.interopBuiltIns.interpretCPointer)
+
     val interopCreateNSStringFromKString =
             symbolTable.referenceSimpleFunction(context.interopBuiltIns.CreateNSStringFromKString)
 
     val interopObjCGetSelector = interopFunction("objCGetSelector")
+
+    val interopCEnumVar = interopClass("CEnumVar")
+
+    val nativeMemUtils = symbolTable.referenceClass(context.interopBuiltIns.nativeMemUtils)
+
+    val readBits = interopFunction("readBits")
+    val writeBits = interopFunction("writeBits")
 
     val objCExportTrapOnUndeclaredException =
             symbolTable.referenceSimpleFunction(context.builtIns.kotlinNativeInternal.getContributedFunctions(
                     Name.identifier("trapOnUndeclaredException"),
                     NoLookupLocation.FROM_BACKEND
             ).single())
+
+    val objCExportResumeContinuation = internalFunction("resumeContinuation")
+    val objCExportResumeContinuationWithException = internalFunction("resumeContinuationWithException")
+    val objCExportGetCoroutineSuspended = internalFunction("getCoroutineSuspended")
+    val objCExportInterceptedContinuation = internalFunction("interceptedContinuation")
 
     val getNativeNullPtr = symbolTable.referenceSimpleFunction(context.getNativeNullPtr)
 
@@ -284,6 +302,7 @@ internal class KonanSymbols(
                 .singleOrNull {
                     it.valueParameters.isEmpty()
                             && it.extensionReceiverParameter?.type?.constructor?.declarationDescriptor == descriptor
+                            && it.extensionReceiverParameter?.type?.isMarkedNullable == false
                             && !it.isExpect
                 } ?: error(descriptor.toString())
         return symbolTable.referenceSimpleFunction(functionDescriptor)

@@ -72,7 +72,7 @@ internal fun ObjCExportMapper.getClassIfCategory(extensionReceiverType: KotlinTy
 
 // Note: partially duplicated in ObjCExportLazyImpl.translateTopLevels.
 internal fun ObjCExportMapper.shouldBeExposed(descriptor: CallableMemberDescriptor): Boolean =
-        descriptor.isEffectivelyPublicApi && !descriptor.isSuspend && !descriptor.isExpect &&
+        descriptor.isEffectivelyPublicApi && !descriptor.isExpect &&
                 !isHiddenByDeprecation(descriptor)
 
 internal fun ObjCExportMapper.shouldBeExposed(descriptor: ClassDescriptor): Boolean =
@@ -237,17 +237,22 @@ private fun ObjCExportMapper.bridgeParameter(parameter: ParameterDescriptor): Me
 
 private fun ObjCExportMapper.bridgeReturnType(
         descriptor: FunctionDescriptor,
-        valueParameters: MutableList<MethodBridgeValueParameter>,
         convertExceptionsToErrors: Boolean
 ): MethodBridge.ReturnValue {
     val returnType = descriptor.returnType!!
     return when {
+        descriptor.isSuspend -> MethodBridge.ReturnValue.Suspend
+
         descriptor is ConstructorDescriptor -> if (descriptor.constructedClass.isArray) {
             MethodBridge.ReturnValue.Instance.FactoryResult
         } else {
             MethodBridge.ReturnValue.Instance.InitResult
         }.let {
-            if (convertExceptionsToErrors) MethodBridge.ReturnValue.WithError.RefOrNull(it) else it
+            if (convertExceptionsToErrors) {
+                MethodBridge.ReturnValue.WithError.ZeroForError(it, successMayBeZero = false)
+            } else {
+                it
+            }
         }
 
         descriptor.containingDeclaration == descriptor.builtIns.any && descriptor.name.asString() == "hashCode" -> {
@@ -268,18 +273,23 @@ private fun ObjCExportMapper.bridgeReturnType(
 
         else -> {
             val returnTypeBridge = bridgeType(returnType)
+            val successReturnValueBridge = MethodBridge.ReturnValue.Mapped(returnTypeBridge)
             if (convertExceptionsToErrors) {
-                if (returnTypeBridge is ReferenceBridge && !TypeUtils.isNullableType(returnType)) {
-                    MethodBridge.ReturnValue.WithError.RefOrNull(MethodBridge.ReturnValue.Mapped(returnTypeBridge))
-                } else {
-                    valueParameters += MethodBridgeValueParameter.KotlinResultOutParameter(returnTypeBridge)
-                    MethodBridge.ReturnValue.WithError.Success
-                }
+                val canReturnZero = !returnTypeBridge.isReferenceOrPointer() || TypeUtils.isNullableType(returnType)
+                MethodBridge.ReturnValue.WithError.ZeroForError(
+                        successReturnValueBridge,
+                        successMayBeZero = canReturnZero
+                )
             } else {
-                MethodBridge.ReturnValue.Mapped(returnTypeBridge)
+                successReturnValueBridge
             }
         }
     }
+}
+
+private fun TypeBridge.isReferenceOrPointer(): Boolean = when (this) {
+    ReferenceBridge, is BlockPointerBridge -> true
+    is ValueTypeBridge -> this.objCValueType == ObjCValueType.POINTER
 }
 
 private fun ObjCExportMapper.bridgeMethodImpl(descriptor: FunctionDescriptor): MethodBridge {
@@ -306,12 +316,28 @@ private fun ObjCExportMapper.bridgeMethodImpl(descriptor: FunctionDescriptor): M
         valueParameters += bridgeParameter(it)
     }
 
-    val returnBridge = bridgeReturnType(descriptor, valueParameters, convertExceptionsToErrors)
-    if (convertExceptionsToErrors) {
-        valueParameters += MethodBridgeValueParameter.ErrorOutParameter
+    val returnBridge = bridgeReturnType(descriptor, convertExceptionsToErrors)
+
+    if (descriptor.isSuspend) {
+        valueParameters += MethodBridgeValueParameter.SuspendCompletion
+    } else if (convertExceptionsToErrors) {
+        // Add error out parameter before tail block parameters. The convention allows this.
+        // Placing it after would trigger https://bugs.swift.org/browse/SR-12201
+        // (see also https://github.com/JetBrains/kotlin-native/issues/3825).
+        val tailBlocksCount = valueParameters.reversed().takeWhile { it.isBlockPointer() }.count()
+        valueParameters.add(valueParameters.size - tailBlocksCount, MethodBridgeValueParameter.ErrorOutParameter)
     }
 
     return MethodBridge(returnBridge, receiver, valueParameters)
+}
+
+private fun MethodBridgeValueParameter.isBlockPointer(): Boolean = when (this) {
+    is MethodBridgeValueParameter.Mapped -> when (this.bridge) {
+        ReferenceBridge, is ValueTypeBridge -> false
+        is BlockPointerBridge -> true
+    }
+    MethodBridgeValueParameter.ErrorOutParameter -> false
+    MethodBridgeValueParameter.SuspendCompletion -> true
 }
 
 internal fun ObjCExportMapper.bridgePropertyType(descriptor: PropertyDescriptor): TypeBridge {

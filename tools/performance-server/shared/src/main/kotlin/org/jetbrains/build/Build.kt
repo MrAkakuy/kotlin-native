@@ -58,17 +58,14 @@ data class Build(val buildNumber: String, val startTime: String, val finishTime:
             return "${if (hours < 10) "0$hours" else "$hours"}:${matchResult[2]}"
         } ?: error { "Wrong format of time $startTime" }
     }
-
     val date: String by lazy {
         val matchResult = "^(\\d{4})(\\d{2})(\\d{2})".toRegex().find(startTime)?.groupValues
         matchResult?.let { "${matchResult[3]}/${matchResult[2]}/${matchResult[1]}" }
                 ?: error { "Wrong format of time $startTime" }
     }
-
     val formattedStartTime: String by lazy {
         formatTime(startTime)
     }
-
     val formattedFinishTime: String by lazy {
         formatTime(finishTime)
     }

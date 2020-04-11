@@ -179,6 +179,22 @@ private object PredefinedTypesHandler {
         return AbbreviatedType(underlyingType, nativePtrClassifier, listOf(), nullable)
     }
 
+    private fun expandObjCObjectMeta(typeArguments: List<TypeArgument>, nullable: Boolean): AbbreviatedType {
+        require(typeArguments.isEmpty())
+        val objCClass = ClassifierStubType(KotlinTypes.objCClass, emptyList(), nullable)
+        return AbbreviatedType(objCClass, KotlinTypes.objCObjectMeta, emptyList(), nullable)
+    }
+
+    private fun expandCArrayPointer(typeArguments: List<TypeArgument>, nullable: Boolean): AbbreviatedType {
+        val cPointer = ClassifierStubType(KotlinTypes.cPointer, typeArguments)
+        return AbbreviatedType(cPointer, KotlinTypes.cArrayPointer, typeArguments, nullable)
+    }
+
+    private fun expandObjCBlockVar(typeArguments: List<TypeArgument>, nullable: Boolean): AbbreviatedType {
+        val underlyingType = ClassifierStubType(KotlinTypes.objCNotImplementedVar, typeArguments, nullable)
+        return AbbreviatedType(underlyingType, KotlinTypes.objCBlockVar, typeArguments, nullable)
+    }
+
     /**
      * @return [ClassifierStubType] if [classifier] is a typealias from [kotlinx.cinterop] package.
      */
@@ -188,6 +204,9 @@ private object PredefinedTypesHandler {
                 KotlinTypes.cOpaquePointer.classifier -> expandCOpaquePointer(nullable)
                 KotlinTypes.cOpaquePointerVar.classifier -> expandCOpaquePointerVar(nullable)
                 KotlinTypes.cPointerVar -> expandCPointerVar(typeArguments, nullable)
+                KotlinTypes.objCObjectMeta -> expandObjCObjectMeta(typeArguments, nullable)
+                KotlinTypes.cArrayPointer -> expandCArrayPointer(typeArguments, nullable)
+                KotlinTypes.objCBlockVar -> expandObjCBlockVar(typeArguments, nullable)
                 else -> null
             }
 

@@ -11,7 +11,6 @@ import org.jetbrains.kotlin.backend.konan.descriptors.isAbstract
 import org.jetbrains.kotlin.backend.konan.descriptors.target
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.llvm.*
-import org.jetbrains.kotlin.backend.konan.llvm.KonanMangler.symbolName
 import org.jetbrains.kotlin.backend.konan.lower.DECLARATION_ORIGIN_BRIDGE_METHOD
 import org.jetbrains.kotlin.backend.konan.lower.bridgeTarget
 import org.jetbrains.kotlin.descriptors.Modality
@@ -38,7 +37,7 @@ internal object DataFlowIR {
                         val primitiveBinaryType: PrimitiveBinaryType?,
                         val name: String?) {
         // Special marker type forbidding devirtualization on its instances.
-        object Virtual : Declared(false, true, null, null, -1, null, "\$VIRTUAL")
+        object Virtual : Declared(0, false, true, null, null, -1, null, "\$VIRTUAL")
 
         class External(val hash: Long, isFinal: Boolean, isAbstract: Boolean,
                        primitiveBinaryType: PrimitiveBinaryType?, name: String? = null)
@@ -59,7 +58,7 @@ internal object DataFlowIR {
             }
         }
 
-        abstract class Declared(isFinal: Boolean, isAbstract: Boolean, primitiveBinaryType: PrimitiveBinaryType?,
+        abstract class Declared(val index: Int, isFinal: Boolean, isAbstract: Boolean, primitiveBinaryType: PrimitiveBinaryType?,
                                 val module: Module?, val symbolTableIndex: Int, val irClass: IrClass?, name: String?)
             : Type(isFinal, isAbstract, primitiveBinaryType, name) {
             val superTypes = mutableListOf<Type>()
@@ -67,9 +66,9 @@ internal object DataFlowIR {
             val itable = mutableMapOf<Long, FunctionSymbol>()
         }
 
-        class Public(val hash: Long, isFinal: Boolean, isAbstract: Boolean, primitiveBinaryType: PrimitiveBinaryType?,
+        class Public(val hash: Long, index: Int, isFinal: Boolean, isAbstract: Boolean, primitiveBinaryType: PrimitiveBinaryType?,
                      module: Module, symbolTableIndex: Int, irClass: IrClass?, name: String? = null)
-            : Declared(isFinal, isAbstract, primitiveBinaryType, module, symbolTableIndex, irClass, name) {
+            : Declared(index, isFinal, isAbstract, primitiveBinaryType, module, symbolTableIndex, irClass, name) {
             override fun equals(other: Any?): Boolean {
                 if (this === other) return true
                 if (other !is Public) return false
@@ -86,9 +85,9 @@ internal object DataFlowIR {
             }
         }
 
-        class Private(val index: Int, isFinal: Boolean, isAbstract: Boolean, primitiveBinaryType: PrimitiveBinaryType?,
+        class Private(index: Int, isFinal: Boolean, isAbstract: Boolean, primitiveBinaryType: PrimitiveBinaryType?,
                       module: Module, symbolTableIndex: Int, irClass: IrClass?, name: String? = null)
-            : Declared(isFinal, isAbstract, primitiveBinaryType, module, symbolTableIndex, irClass, name) {
+            : Declared(index, isFinal, isAbstract, primitiveBinaryType, module, symbolTableIndex, irClass, name) {
             override fun equals(other: Any?): Boolean {
                 if (this === other) return true
                 if (other !is Private) return false
@@ -307,7 +306,7 @@ internal object DataFlowIR {
 
                 is Node.StaticCall -> {
                     val result = StringBuilder()
-                    result.appendln("        STATIC CALL ${node.callee}")
+                    result.appendln("        STATIC CALL ${node.callee}. Return type = ${node.returnType}")
                     node.arguments.forEach {
                         result.append("            ARG #${ids[it.node]!!}")
                         if (it.castToType == null)
@@ -320,7 +319,7 @@ internal object DataFlowIR {
 
                 is Node.VtableCall -> {
                     val result = StringBuilder()
-                    result.appendln("        VIRTUAL CALL ${node.callee}")
+                    result.appendln("        VIRTUAL CALL ${node.callee}. Return type = ${node.returnType}")
                     result.appendln("            RECEIVER: ${node.receiverType}")
                     result.appendln("            VTABLE INDEX: ${node.calleeVtableIndex}")
                     node.arguments.forEach {
@@ -335,7 +334,7 @@ internal object DataFlowIR {
 
                 is Node.ItableCall -> {
                     val result = StringBuilder()
-                    result.appendln("        INTERFACE CALL ${node.callee}")
+                    result.appendln("        INTERFACE CALL ${node.callee}. Return type = ${node.returnType}")
                     result.appendln("            RECEIVER: ${node.receiverType}")
                     result.appendln("            METHOD HASH: ${node.calleeHash}")
                     node.arguments.forEach {
@@ -474,7 +473,7 @@ internal object DataFlowIR {
         private val getContinuationSymbol = context.ir.symbols.getContinuation
         private val continuationType = getContinuationSymbol.owner.returnType
 
-        var privateTypeIndex = 0
+        var privateTypeIndex = 1 // 0 for [Virtual]
         var privateFunIndex = 0
 
         init {
@@ -517,7 +516,7 @@ internal object DataFlowIR {
             val placeToClassTable = true
             val symbolTableIndex = if (placeToClassTable) module.numberOfClasses++ else -1
             val type = if (irClass.isExported())
-                           Type.Public(name.localHash.value, isFinal, isAbstract, null,
+                           Type.Public(name.localHash.value, privateTypeIndex++, isFinal, isAbstract, null,
                                    module, symbolTableIndex, irClass, takeName { name })
                        else
                            Type.Private(privateTypeIndex++, isFinal, isAbstract, null,
@@ -549,6 +548,7 @@ internal object DataFlowIR {
                 primitiveMap.getOrPut(primitiveBinaryType) {
                     Type.Public(
                             primitiveBinaryType.ordinal.toLong(),
+                            privateTypeIndex++,
                             true,
                             false,
                             primitiveBinaryType,

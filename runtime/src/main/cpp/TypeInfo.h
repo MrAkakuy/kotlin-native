@@ -49,7 +49,8 @@ enum Konan_RuntimeType {
   RT_FLOAT32    = 6,
   RT_FLOAT64    = 7,
   RT_NATIVE_PTR = 8,
-  RT_BOOLEAN    = 9
+  RT_BOOLEAN    = 9,
+  RT_VECTOR128  = 10
 };
 
 // Flags per type.
@@ -77,7 +78,10 @@ struct ExtendedTypeInfo {
   const uint8_t* fieldTypes_;
   // Names of all fields.
   const char** fieldNames_;
-  // TODO: do we want any other info here?
+  // Number of supported debug operations.
+  int32_t debugOperationsCount_;
+  // Table of supported debug operations functions.
+  void** debugOperations_;
 };
 
 typedef void const* VTableElement;
@@ -99,8 +103,8 @@ struct TypeInfo {
     const TypeInfo* typeInfo_;
     // Extended RTTI, to retain cross-version debuggability, since ABI version 5 shall always be at the second position.
     const ExtendedTypeInfo* extendedInfo_;
-    // ABI version.
-    uint32_t abiVersion_;
+    // Unused field.
+    uint32_t unused_;
     // Negative value marks array class/string, and it is negated element size.
     int32_t instanceSize_;
     // Must be pointer to Any for array classes, and null for Any.

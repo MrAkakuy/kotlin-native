@@ -4,6 +4,7 @@
  */
 package org.jetbrains.kotlin.native.interop.gen
 
+import org.jetbrains.kotlin.native.interop.gen.jvm.GenerationMode
 import org.jetbrains.kotlin.native.interop.gen.jvm.InteropConfiguration
 import org.jetbrains.kotlin.native.interop.gen.jvm.KotlinPlatform
 import org.jetbrains.kotlin.native.interop.indexer.*
@@ -65,7 +66,7 @@ class BridgeGenerationComponentsBuilder {
 /**
  * Components that are not passed via StubIr but required for generation of wrappers.
  */
-class WrapperGenerationInfo(val global: GlobalDecl)
+class WrapperGenerationInfo(val global: GlobalDecl, val passViaPointer: Boolean = false)
 
 interface WrapperGenerationComponents {
     val getterToWrapperInfo: Map<PropertyAccessor.Getter.ExternalGetter, WrapperGenerationInfo>
@@ -100,6 +101,13 @@ interface StubsBuildingContext {
 
     val platform: KotlinPlatform
 
+    /**
+     * In some cases StubIr should be different for metadata and sourcecode modes.
+     * For example, it is impossible to represent call to superclass constructor in
+     * metadata directly and arguments should be passed via annotations instead.
+     */
+    val generationMode: GenerationMode
+
     fun isStrictEnum(enumDef: EnumDef): Boolean
 
     val macroConstantsByName: Map<String, MacroDef>
@@ -119,6 +127,8 @@ interface StubsBuildingContext {
     fun getKotlinName(funcDecl: FunctionDecl): Classifier
 
     fun getKotlinName(globalDecl: GlobalDecl): Classifier
+
+    fun isOverloading(func: FunctionDecl): Boolean
 }
 
 /**
@@ -136,10 +146,14 @@ class StubsBuildingContextImpl(
 
     override val configuration: InteropConfiguration = stubIrContext.configuration
     override val platform: KotlinPlatform = stubIrContext.platform
+    override val generationMode: GenerationMode = stubIrContext.generationMode
     val imports: Imports = stubIrContext.imports
     private val nativeIndex: NativeIndex = stubIrContext.nativeIndex
 
     private var theCounter = 0
+
+    private val uniqFunctions = mutableSetOf<String>()
+    override fun isOverloading(func: FunctionDecl) = !uniqFunctions.add(func.name) // TODO: params & return type.
 
     override fun generateNextUniqueId(prefix: String) =
             prefix + pkgName.replace('.', '_') + theCounter++
@@ -385,7 +399,7 @@ class StubIrBuilder(private val context: StubIrContext) {
 
     private fun generateStubsForFunction(func: FunctionDecl) {
         try {
-            addStubs(FunctionStubBuilder(buildingContext, func).build())
+            addStubs(FunctionStubBuilder(buildingContext, func, skipOverloads = true).build())
         } catch (e: Throwable) {
             context.log("Warning: cannot generate stubs for function ${func.name}")
         }

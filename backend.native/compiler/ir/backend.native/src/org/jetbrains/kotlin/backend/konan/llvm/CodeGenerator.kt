@@ -124,8 +124,9 @@ internal inline fun<R> generateFunction(codegen: CodeGenerator,
 
 
 internal inline fun<R> generateFunction(codegen: CodeGenerator, function: LLVMValueRef,
+                                        startLocation: LocationInfo? = null, endLocation: LocationInfo? = null,
                                         code:FunctionGenerationContext.(FunctionGenerationContext) -> R) {
-    val functionGenerationContext = FunctionGenerationContext(function, codegen, null, null)
+    val functionGenerationContext = FunctionGenerationContext(function, codegen, startLocation, endLocation)
     try {
         generateFunctionBody(functionGenerationContext, code)
     } finally {
@@ -140,7 +141,7 @@ internal inline fun generateFunction(
         block: FunctionGenerationContext.(FunctionGenerationContext) -> Unit
 ): LLVMValueRef {
     val function = LLVMAddFunction(codegen.context.llvmModule, name, functionType)!!
-    generateFunction(codegen, function, block)
+    generateFunction(codegen, function, startLocation = null, endLocation = null, code = block)
     return function
 }
 
@@ -153,11 +154,6 @@ private inline fun <R> generateFunctionBody(
         functionGenerationContext.unreachable()
     functionGenerationContext.epilogue()
     functionGenerationContext.resetDebugLocation()
-}
-
-internal fun FunctionGenerationContext.initBridgeDebugInfo() {
-    val location = setupBridgeDebugInfo(context, function) ?: return
-    debugLocation(location, location)
 }
 
 /**
@@ -672,7 +668,7 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
     fun kotlinExceptionHandler(
             block: FunctionGenerationContext.(exception: LLVMValueRef) -> Unit
     ): ExceptionHandler {
-        val lpBlock = basicBlock("kotlinExceptionHandler", null)
+        val lpBlock = basicBlock("kotlinExceptionHandler", position()?.end)
 
         appendingTo(lpBlock) {
             val exception = catchKotlinException()
@@ -925,7 +921,6 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
         }
         val singleton = context.llvmDeclarations.forSingleton(irClass)
         val instanceAddress = singleton.instanceStorage
-        val instanceShadowAddress = singleton.instanceShadowStorage
 
         if (storageKind == ObjectStorageKind.PERMANENT) {
             return loadSlot(instanceAddress.getAddress(this), false)
@@ -942,13 +937,13 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
         val typeInfo = codegen.typeInfoForAllocation(irClass)
         val defaultConstructor = irClass.constructors.single { it.valueParameters.size == 0 }
         val ctor = codegen.llvmFunction(defaultConstructor)
-        val (initFunction, args) =
+        val initFunction =
                 if (storageKind == ObjectStorageKind.SHARED && context.config.threadsAreAllowed) {
-                    val shadowObjectPtr = instanceShadowAddress!!.getAddress(this)
-                    context.llvm.initSharedInstanceFunction to listOf(objectPtr, shadowObjectPtr, typeInfo, ctor)
+                    context.llvm.initSharedInstanceFunction
                 } else {
-                    context.llvm.initInstanceFunction to listOf(objectPtr, typeInfo, ctor)
+                    context.llvm.initInstanceFunction
                 }
+        val args = listOf(objectPtr, typeInfo, ctor)
         val newValue = call(initFunction, args, Lifetime.GLOBAL, exceptionHandler)
         val bbInitResult = currentBlock
         br(bbExit)
@@ -1009,22 +1004,19 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
                 error("type-checking against Kotlin classes inheriting Objective-C meta-classes isn't supported yet")
             }
 
-            val objCDeclarations = context.llvmDeclarations.forClass(irClass).objCDeclarations!!
-            val classPointerGlobal = objCDeclarations.classPointerGlobal.llvmGlobal
+            val classInfo = codegen.kotlinObjCClassInfo(irClass)
+            val classPointerGlobal = load(structGep(classInfo, KotlinObjCClassInfoGenerator.createdClassFieldIndex))
 
             val storedClass = this.load(classPointerGlobal)
 
             val storedClassIsNotNull = this.icmpNe(storedClass, kNullInt8Ptr)
 
             return this.ifThenElse(storedClassIsNotNull, storedClass) {
-                val newClass = call(
+                call(
                         context.llvm.createKotlinObjCClass,
-                        listOf(objCDeclarations.classInfoGlobal.llvmGlobal),
+                        listOf(classInfo),
                         exceptionHandler = exceptionHandler
                 )
-
-                this.store(newClass, classPointerGlobal)
-                newClass
             }
         }
     }
@@ -1127,8 +1119,8 @@ internal class FunctionGenerationContext(val function: LLVMValueRef,
                 val clause = ConstArray(int8TypePtr, listOf(kotlinExceptionRtti))
                 LLVMAddClause(landingpad, clause.llvm)
 
-                val bbCleanup = basicBlock("forwardException", null)
-                val bbUnexpected = basicBlock("unexpectedException", null)
+                val bbCleanup = basicBlock("forwardException", position()?.end)
+                val bbUnexpected = basicBlock("unexpectedException", position()?.end)
 
                 val selector = extractValue(landingpad, 1)
                 condBr(

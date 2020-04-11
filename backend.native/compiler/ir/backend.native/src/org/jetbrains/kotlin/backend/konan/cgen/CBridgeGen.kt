@@ -42,6 +42,7 @@ import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.types.Variance
 import org.jetbrains.kotlin.util.OperatorNameConventions
 import org.jetbrains.kotlin.backend.konan.getObjCMethodInfo
+import org.jetbrains.kotlin.backend.konan.lower.CallableReferenceLowering
 import org.jetbrains.kotlin.ir.descriptors.*
 
 internal interface KotlinStubs {
@@ -261,6 +262,10 @@ private fun <R> KotlinToCCallBuilder.handleArgumentForVarargParameter(
             } else {
                 stubs.throwCompilerError(initializer, "unexpected initializer")
             }
+        } else if (variable is IrValueParameter && CallableReferenceLowering.isLoweredCallableReference(variable)) {
+            val location = variable.parent // Parameter itself has incorrect location.
+            val kind = if (this.isObjCMethod) "Objective-C methods" else "C functions"
+            stubs.reportError(location, "callable references to variadic $kind are not supported")
         } else {
             stubs.throwCompilerError(variable, "unexpected value declaration")
         }
@@ -535,7 +540,8 @@ internal fun KotlinStubs.generateCFunctionPointer(
             expression.endOffset,
             expression.type,
             fakeFunction.symbol,
-            0
+            typeArgumentsCount = 0,
+            reflectionTarget = null
     )
 }
 
@@ -596,7 +602,7 @@ private fun IrType.isUShort() = this.isUnsigned(UnsignedType.USHORT)
 private fun IrType.isUInt() = this.isUnsigned(UnsignedType.UINT)
 private fun IrType.isULong() = this.isUnsigned(UnsignedType.ULONG)
 
-private fun IrType.isCEnumType(): Boolean {
+internal fun IrType.isCEnumType(): Boolean {
     val simpleType = this as? IrSimpleType ?: return false
     if (simpleType.hasQuestionMark) return false
     val enumClass = simpleType.classifier.owner as? IrClass ?: return false
@@ -609,6 +615,8 @@ private fun IrType.isCEnumType(): Boolean {
 // Make sure external stubs always get proper annotaions.
 private fun IrDeclaration.hasCCallAnnotation(name: String): Boolean =
         this.annotations.hasAnnotation(cCall.child(Name.identifier(name)))
+                // LazyIr doesn't pass annotations from descriptor to IrValueParameter.
+                || this.descriptor.annotations.hasAnnotation(cCall.child(Name.identifier(name)))
 
 
 private fun IrValueParameter.isWCStringParameter() = hasCCallAnnotation("WCString")
@@ -755,7 +763,7 @@ private fun KotlinStubs.mapType(type: IrType, retained: Boolean, variadic: Boole
 private fun IrType.isTypeOfNullLiteral(): Boolean = this is IrSimpleType && hasQuestionMark
         && classifier.isClassWithFqName(KotlinBuiltIns.FQ_NAMES.nothing)
 
-private fun IrType.isVector(): Boolean {
+internal fun IrType.isVector(): Boolean {
     if (this is IrSimpleType && !this.hasQuestionMark) {
         return classifier.isClassWithFqName(KonanFqNames.Vector128.toUnsafe())
     }
@@ -810,6 +818,10 @@ private fun KotlinStubs.mapType(
 
         StructValuePassing(kotlinClass, getNamedCStructType(kotlinClass)
                 ?: reportUnsupportedType("not a structure or too complex"))
+    }
+
+    type.classOrNull?.isSubtypeOfClass(symbols.nativePointed) == true -> {
+        TrivialValuePassing(type, CTypes.voidPtr)
     }
 
     type.isFunction() -> if (variadic){
@@ -1204,7 +1216,8 @@ private class ObjCBlockPointerValuePassing(
                 OBJC_BLOCK_FUNCTION_IMPL, IrClassSymbolImpl(classDescriptor),
                 Name.identifier(stubs.getUniqueKotlinFunctionReferenceClassName("BlockFunctionImpl")),
                 ClassKind.CLASS, Visibilities.PRIVATE, Modality.FINAL,
-                isCompanion = false, isInner = false, isData = false, isExternal = false, isInline = false, isExpect = false
+                isCompanion = false, isInner = false, isData = false, isExternal = false,
+                isInline = false, isExpect = false, isFun = false
         )
         classDescriptor.bind(irClass)
         irClass.createParameterDeclarations()
@@ -1277,7 +1290,7 @@ private class ObjCBlockPointerValuePassing(
         irClass.addChild(invokeMethod)
         invokeMethod.createDispatchReceiverParameter()
 
-        (0 until parameterCount).mapTo(invokeMethod.valueParameters) { index ->
+        invokeMethod.valueParameters += (0 until parameterCount).map { index ->
             val parameterDescriptor = WrappedValueParameterDescriptor()
             val parameter = IrValueParameterImpl(
                     startOffset, endOffset,

@@ -16,6 +16,7 @@ import org.jetbrains.kotlin.backend.common.push
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.cgen.*
 import org.jetbrains.kotlin.backend.konan.descriptors.allOverriddenFunctions
+import org.jetbrains.kotlin.backend.konan.descriptors.isFromInteropLibrary
 import org.jetbrains.kotlin.backend.konan.descriptors.synthesizedName
 import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.ir.companionObject
@@ -50,7 +51,18 @@ import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.resolve.descriptorUtil.fqNameSafe
 import org.jetbrains.kotlin.resolve.descriptorUtil.module
 
-internal abstract class BaseInteropIrTransformer(private val context: Context) : IrBuildingTransformer(context) {
+internal class InteropLowering(context: Context) : FileLoweringPass {
+    // TODO: merge these lowerings.
+    private val part1 = InteropLoweringPart1(context)
+    private val part2 = InteropLoweringPart2(context)
+
+    override fun lower(irFile: IrFile) {
+        part1.lower(irFile)
+        part2.lower(irFile)
+    }
+}
+
+private abstract class BaseInteropIrTransformer(private val context: Context) : IrBuildingTransformer(context) {
 
     protected inline fun <T> generateWithStubs(element: IrElement? = null, block: KotlinStubs.() -> T): T =
             createKotlinStubs(element).block()
@@ -105,7 +117,7 @@ internal abstract class BaseInteropIrTransformer(private val context: Context) :
     protected abstract fun addTopLevel(declaration: IrDeclaration)
 }
 
-internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransformer(context), FileLoweringPass {
+private class InteropLoweringPart1(val context: Context) : BaseInteropIrTransformer(context), FileLoweringPass {
 
     private val symbols get() = context.ir.symbols
 
@@ -251,9 +263,9 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
             resultDescriptor.bind(result)
             result.parent = irClass
             result.createDispatchReceiverParameter()
-            constructor.valueParameters.mapTo(result.valueParameters) { it.copyTo(result) }
+            result.valueParameters += constructor.valueParameters.map { it.copyTo(result) }
 
-            result.overriddenSymbols.add(initMethod.symbol)
+            result.overriddenSymbols += initMethod.symbol
 
             result.body = context.createIrBuilder(result.symbol).irBlockBody(result) {
                 +irReturn(
@@ -396,7 +408,7 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
             }
         }
 
-        parameterTypes.mapIndexedTo(newFunction.valueParameters) { index, type ->
+        newFunction.valueParameters += parameterTypes.mapIndexed { index, type ->
             WrappedValueParameterDescriptor().let {
                 IrValueParameterImpl(
                         function.startOffset, function.endOffset,
@@ -454,6 +466,15 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
         }
     }
 
+    private fun IrClass.hasFields() =
+            this.declarations.any {
+                when (it) {
+                    is IrField ->  it.isReal
+                    is IrProperty -> it.isReal && it.backingField != null
+                    else -> false
+                }
+            }
+
     private fun checkKotlinObjCClass(irClass: IrClass) {
         val kind = irClass.descriptor.kind
         if (kind != ClassKind.CLASS && kind != ClassKind.OBJECT) {
@@ -468,6 +489,16 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
                     "Non-final Kotlin subclasses of Objective-C classes are not yet supported",
                     currentFile, irClass
             )
+        }
+
+        irClass.companionObject()?.let {
+            if (it.hasFields() ||
+                    it.getSuperClassNotAny()?.hasFields() ?: false) {
+                context.reportCompilationError(
+                        "Fields are not supported for Companion of subclass of ObjC type",
+                        currentFile, irClass
+                )
+            }
         }
 
         var hasObjCClassSupertype = false
@@ -649,9 +680,24 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
         val initMethodInfo = initMethod.getExternalObjCMethodInfo()!!
         return builder.at(expression).run {
             val classPtr = getObjCClass(constructedClass.symbol)
-            irForceNotNull(callAllocAndInit(classPtr, initMethodInfo, arguments, expression, initMethod))
+            ensureObjCReferenceNotNull(callAllocAndInit(classPtr, initMethodInfo, arguments, expression, initMethod))
         }
     }
+
+    private fun IrBuilderWithScope.ensureObjCReferenceNotNull(expression: IrExpression): IrExpression =
+            if (!expression.type.containsNull()) {
+                expression
+            } else {
+                irBlock(resultType = expression.type) {
+                    val temp = irTemporary(expression)
+                    +irIfThen(
+                            context.irBuiltIns.unitType,
+                            irEqeqeq(irGet(temp), irNull()),
+                            irCall(symbols.ThrowNullPointerException)
+                    )
+                    +irGet(temp)
+                }
+            }
 
     override fun visitCall(expression: IrCall): IrExpression {
         expression.transformChildrenVoid()
@@ -784,12 +830,22 @@ internal class InteropLoweringPart1(val context: Context) : BaseInteropIrTransfo
 /**
  * Lowers some interop intrinsic calls.
  */
-internal class InteropLoweringPart2(val context: Context) : FileLoweringPass {
+private class InteropLoweringPart2(val context: Context) : FileLoweringPass {
     override fun lower(irFile: IrFile) {
         val transformer = InteropTransformer(context, irFile)
         irFile.transformChildrenVoid(transformer)
 
-        irFile.addChildren(transformer.newTopLevelDeclarations)
+        while (transformer.newTopLevelDeclarations.isNotEmpty()) {
+            val newTopLevelDeclarations = transformer.newTopLevelDeclarations.toList()
+            transformer.newTopLevelDeclarations.clear()
+
+            // Assuming these declarations contain only new IR (i.e. existing lowered IR has not been moved there).
+            // TODO: make this more reliable.
+            val loweredNewTopLevelDeclarations =
+                    newTopLevelDeclarations.map { it.transform(transformer, null) as IrDeclaration }
+
+            irFile.addChildren(loweredNewTopLevelDeclarations)
+        }
     }
 }
 
@@ -839,9 +895,37 @@ private class InteropTransformer(val context: Context, override val irFile: IrFi
         val function = expression.symbol.owner
         val inlinedClass = function.returnType.getInlinedClassNative()
         if (inlinedClass?.descriptor == interop.cPointer || inlinedClass?.descriptor == interop.nativePointed) {
-            throw Error("Native interop types constructors must not be called directly")
+            context.reportCompilationError("Native interop types constructors must not be called directly",
+                irFile, expression)
         }
         return expression
+    }
+
+    /**
+     * Handle `const val`s that come from interop libraries.
+     *
+     * We extract constant value from the backing field, and replace getter invocation with it.
+     */
+    private fun tryGenerateInteropConstantRead(expression: IrCall): IrExpression? {
+        val function = expression.symbol.owner
+
+        if (!function.descriptor.module.isFromInteropLibrary()) return null
+        if (!function.isGetter) return null
+
+        val constantProperty = (function as? IrSimpleFunction)
+                ?.correspondingPropertySymbol
+                ?.owner
+                ?.takeIf { it.isConst }
+                ?: return null
+
+        val irConstant = (constantProperty.backingField
+                ?.initializer
+                ?.expression
+                ?: error("Constant property ${constantProperty.name} has no initializer!"))
+                as IrConst<*>
+
+        // Avoid node duplication
+        return irConstant.copy()
     }
 
     override fun visitCall(expression: IrCall): IrExpression {
@@ -863,6 +947,10 @@ private class InteropTransformer(val context: Context, override val irFile: IrFi
             context.llvmImports.add(function.llvmSymbolOrigin)
             return generateWithStubs { generateCCall(expression, builder, isInvoke = false) }
         }
+
+        tryGenerateInteropMemberAccess(expression, symbols, builder)?.let { return it }
+
+        tryGenerateInteropConstantRead(expression)?.let { return it }
 
         val intrinsicType = tryGetIntrinsicType(expression)
 
@@ -955,7 +1043,8 @@ private class InteropTransformer(val context: Context, override val irFile: IrFi
                                     irFile, expression)
                         }
 
-                        else -> throw Error()
+                        else -> context.reportCompilationError("unexpected intrinsic $intrinsicType",
+                                irFile, expression)
                     }
 
                     val receiverClass = symbols.integerClasses.single {
@@ -1038,7 +1127,8 @@ private class InteropTransformer(val context: Context, override val irFile: IrFi
                             builder.startOffset, builder.endOffset,
                             symbols.executeImpl.owner.valueParameters[3].type,
                             targetSymbol,
-                            typeArgumentsCount = 0)
+                            typeArgumentsCount = 0,
+                            reflectionTarget = null)
 
                     builder.irCall(symbols.executeImpl).apply {
                         putValueArgument(0, expression.dispatchReceiver)

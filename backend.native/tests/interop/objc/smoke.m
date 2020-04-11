@@ -320,3 +320,38 @@ BOOL customStringDeallocated = NO;
     customStringDeallocated = YES;
 }
 @end;
+
+@implementation TestConstructorReturnsNull
+- (instancetype)init {
+    return nil;
+}
+@end;
+
+@implementation TestCallableReferences
+- (int)instanceMethod {
+    return self.value;
+}
+
++ (int)classMethod:(int)first :(int)second {
+    return first + second;
+}
+@end;
+
+
+// [KT-36067] mangling
+@implementation FooMangled : NSObject
+@synthesize Companion;
+@end;
+
+
+@implementation DeallocExecutor
+-(void)dealloc {
+    self.deallocListener.deallocated = YES;
+}
+@end;
+
+@implementation DeallocListener
+-(BOOL)deallocExecutorIsNil {
+    return self.deallocExecutor == nil;
+}
+@end;

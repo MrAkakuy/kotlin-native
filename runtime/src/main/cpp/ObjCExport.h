@@ -4,11 +4,13 @@
 #if KONAN_OBJC_INTEROP
 
 #import <objc/runtime.h>
+#import <Foundation/NSString.h>
 
 #import "Types.h"
 #import "Memory.h"
 
 extern "C" id objc_retain(id self);
+extern "C" id objc_retainBlock(id self);
 extern "C" void objc_release(id self);
 
 inline static id GetAssociatedObject(ObjHeader* obj) {

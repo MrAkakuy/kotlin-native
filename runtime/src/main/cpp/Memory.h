@@ -325,17 +325,10 @@ struct MetaObjHeader {
   // Flags for the object state.
   int32_t flags_;
 
-  // TODO: maybe make it a union for the orthogonal features.
   struct {
     // Strong reference to the counter object.
     ObjHeader* counter_;
   } WeakReference;
-  struct {
-    // Leak detector's previous list element.
-    ObjHeader* previous_;
-    // Leak detector's next list element.
-    ObjHeader* next_;
-  } LeakDetector;
 };
 
 // Header of every object.
@@ -468,11 +461,11 @@ OBJ_GETTER(InitInstance,
     ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
 
 OBJ_GETTER(InitSharedInstanceStrict,
-    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
 OBJ_GETTER(InitSharedInstanceRelaxed,
-    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
 OBJ_GETTER(InitSharedInstance,
-    ObjHeader** location, ObjHeader** localLocation, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
+    ObjHeader** location, const TypeInfo* typeInfo, void (*ctor)(ObjHeader*));
 
 // Weak reference operations.
 // Atomically clears counter object reference.
@@ -521,11 +514,13 @@ MODEL_VARIANTS(void, UpdateHeapRefIfNull, ObjHeader** location, const ObjHeader*
 MODEL_VARIANTS(void, UpdateReturnRef, ObjHeader** returnSlot, const ObjHeader* object);
 // Compares and swaps reference with taken lock.
 OBJ_GETTER(SwapHeapRefLocked,
-    ObjHeader** location, ObjHeader* expectedValue, ObjHeader* newValue, int32_t* spinlock) RUNTIME_NOTHROW;
+    ObjHeader** location, ObjHeader* expectedValue, ObjHeader* newValue, int32_t* spinlock,
+    int32_t* cookie) RUNTIME_NOTHROW;
 // Sets reference with taken lock.
-void SetHeapRefLocked(ObjHeader** location, ObjHeader* newValue, int32_t* spinlock) RUNTIME_NOTHROW;
+void SetHeapRefLocked(ObjHeader** location, ObjHeader* newValue, int32_t* spinlock,
+    int32_t* cookie) RUNTIME_NOTHROW;
 // Reads reference with taken lock.
-OBJ_GETTER(ReadHeapRefLocked, ObjHeader** location, int32_t* spinlock) RUNTIME_NOTHROW;
+OBJ_GETTER(ReadHeapRefLocked, ObjHeader** location, int32_t* spinlock, int32_t* cookie) RUNTIME_NOTHROW;
 // Called on frame enter, if it has object slots.
 MODEL_VARIANTS(void, EnterFrame, ObjHeader** start, int parameters, int count);
 // Called on frame leave, if it has object slots.
@@ -554,6 +549,11 @@ void AddTLSRecord(MemoryState* memory, void** key, int size) RUNTIME_NOTHROW;
 void ClearTLSRecord(MemoryState* memory, void** key) RUNTIME_NOTHROW;
 // Lookup element in TLS object storage.
 ObjHeader** LookupTLS(void** key, int index) RUNTIME_NOTHROW;
+
+// APIs for the async GC.
+void GC_RegisterWorker(void* worker) RUNTIME_NOTHROW;
+void GC_UnregisterWorker(void* worker) RUNTIME_NOTHROW;
+void GC_CollectorCallback(void* worker) RUNTIME_NOTHROW;
 
 #ifdef __cplusplus
 }

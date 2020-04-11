@@ -7,9 +7,9 @@ package org.jetbrains.kotlin.cli.bc
 
 import org.jetbrains.kotlin.cli.common.arguments.CommonCompilerArguments
 import org.jetbrains.kotlin.cli.common.arguments.Argument
+import org.jetbrains.kotlin.cli.common.messages.CompilerMessageSeverity
 import org.jetbrains.kotlin.cli.common.messages.MessageCollector
-import org.jetbrains.kotlin.config.AnalysisFlag
-import org.jetbrains.kotlin.config.AnalysisFlags
+import org.jetbrains.kotlin.config.*
 
 class K2NativeCompilerArguments : CommonCompilerArguments() {
     // First go the options interesting to the general public.
@@ -152,8 +152,18 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     )
     var frameworkImportHeaders: Array<String>? = null
 
-    @Argument(value = "-Xg0", description = "Add light debug information")
-    var lightDebug: Boolean = false
+    @Argument(
+            value = "-Xadd-light-debug",
+            valueDescription = "{disable|enable}",
+            description = "Add light debug information for optimized builds. This option is skipped in debug builds.\n" +
+                    "It's enabled by default on Darwin platforms where collected debug information is stored in .dSYM file.\n" +
+                    "Currently option is disabled by default on other platforms."
+    )
+    var lightDebugString: String? = null
+
+    // TODO: remove after 1.4 release.
+    @Argument(value = "-Xg0", description = "Add light debug information. Deprecated option. Please use instead -Xadd-light-debug=enable")
+    var lightDebugDeprecated: Boolean = false
 
     @Argument(
             value = MAKE_CACHE,
@@ -195,9 +205,16 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(
         value = INCLUDE_ARG,
         valueDescription = "<path>",
-        description = "A path to an intermediate library that should be processed in the same manner as source files.\n"
+        description = "A path to an intermediate library that should be processed in the same manner as source files"
     )
     var includes: Array<String>? = null
+
+    @Argument(
+        value = SHORT_MODULE_NAME_ARG,
+        valueDescription = "<name>",
+        description = "A short name used to denote this library in the IDE and in a generated Objective-C header"
+    )
+    var shortModuleName: String? = null
 
     @Argument(value = STATIC_FRAMEWORK_FLAG, description = "Create a framework with a static library instead of a dynamic one")
     var staticFramework: Boolean = false
@@ -236,8 +253,8 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
     @Argument(value = "-Xcoverage-file", valueDescription = "<path>", description = "Save coverage information to the given file")
     var coverageFile: String? = null
 
-    @Argument(value = "-Xobjc-generics", description = "Enable experimental generics support for framework header")
-    var objcGenerics: Boolean = false
+    @Argument(value = "-Xno-objc-generics", description = "Disable generics support for framework header")
+    var noObjcGenerics: Boolean = false
 
     @Argument(value="-Xoverride-clang-options", valueDescription = "<arg1,arg2,...>", description = "Explicit list of Clang options")
     var clangOptions: Array<String>? = null
@@ -255,6 +272,17 @@ class K2NativeCompilerArguments : CommonCompilerArguments() {
                 if (printIr)
                     phasesToDumpAfter = arrayOf("ALL")
             }
+
+    override fun checkIrSupport(languageVersionSettings: LanguageVersionSettings, collector: MessageCollector) {
+        if (languageVersionSettings.languageVersion < LanguageVersion.KOTLIN_1_4
+                || languageVersionSettings.apiVersion < ApiVersion.KOTLIN_1_4
+        ) {
+            collector.report(
+                    severity = CompilerMessageSeverity.ERROR,
+                    message = "Native backend cannot be used with language or API version below 1.4"
+            )
+        }
+    }
 }
 
 const val EMBED_BITCODE_FLAG = "-Xembed-bitcode"
@@ -264,3 +292,4 @@ const val INCLUDE_ARG = "-Xinclude"
 const val CACHED_LIBRARY = "-Xcached-library"
 const val MAKE_CACHE = "-Xmake-cache"
 const val ADD_CACHE = "-Xadd-cache"
+const val SHORT_MODULE_NAME_ARG = "-Xshort-module-name"

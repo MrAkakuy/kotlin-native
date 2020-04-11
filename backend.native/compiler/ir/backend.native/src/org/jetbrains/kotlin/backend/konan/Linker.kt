@@ -43,10 +43,7 @@ internal class Linker(val context: Context) {
         }
         val includedBinaries = includedBinariesLibraries.map { (it as? KonanLibrary)?.includedPaths.orEmpty() }.flatten()
 
-        val cachedLibraries = context.librariesWithDependencies
-                .filter { context.config.cachedLibraries.isLibraryCached(it) }
-        val libraryProvidedLinkerFlags = (nativeDependencies + cachedLibraries)
-                .distinct().map { it.linkerOpts }.flatten()
+        val libraryProvidedLinkerFlags = context.llvm.allNativeDependencies.map { it.linkerOpts }.flatten()
 
         runLinker(objectFiles, includedBinaries, libraryProvidedLinkerFlags)
         renameOutput()
@@ -136,7 +133,17 @@ internal class Linker(val context: Context) {
                 it.execute()
             }
         } catch (e: KonanExternalToolFailure) {
-            context.reportCompilationError("${e.toolName} invocation reported errors")
+            val extraUserInfo =
+                    if (caches.static.isNotEmpty() || caches.dynamic.isNotEmpty())
+                        """
+                        Please try to disable compiler caches and rerun the build. To disable compiler caches, add the following line to the gradle.properties file in the project's root directory:
+                            
+                            kotlin.native.cacheKind=none
+                            
+                        Also, consider filing an issue with full Gradle log here: https://kotl.in/issue
+                        """.trimIndent()
+                    else ""
+            context.reportCompilationError("${e.toolName} invocation reported errors\n$extraUserInfo\n${e.message}")
         }
         return executable
     }

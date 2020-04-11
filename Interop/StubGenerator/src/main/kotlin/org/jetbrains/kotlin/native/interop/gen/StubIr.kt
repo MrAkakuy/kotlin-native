@@ -91,13 +91,29 @@ sealed class StubOrigin {
     /**
      * Special case when element of IR was generated.
      */
-    // TODO: All "synthetic" cases should be handled separately.
-    object Synthetic : StubOrigin()
+    sealed class Synthetic : StubOrigin() {
+        object CompanionObject : Synthetic()
 
-    /**
-     * Denotes default constructor that was generated and has no real origin.
-     */
-    object SyntheticDefaultConstructor : StubOrigin()
+        /**
+         * Denotes default constructor that was generated and has no real origin.
+         */
+        object DefaultConstructor : Synthetic()
+
+        /**
+         * CEnum.Companion.byValue.
+         */
+        class EnumByValue(val enum: EnumDef) : Synthetic()
+
+        /**
+         * CEnum.value.
+         */
+        class EnumValueField(val enum: EnumDef) : Synthetic()
+
+        /**
+         * E.CEnumVar.value.
+         */
+        class EnumVarValueField(val enum: EnumDef) : Synthetic()
+    }
 
     class ObjCCategoryInitMethod(
             val method: org.jetbrains.kotlin.native.interop.indexer.ObjCMethod
@@ -125,14 +141,17 @@ sealed class StubOrigin {
 
     class Enum(val enum: EnumDef) : StubOrigin()
 
+    class EnumEntry(val constant: EnumConstant) : StubOrigin()
+
     class Constructor(val constructor: CxxClassConstructorDecl) : StubOrigin()
 
     class Function(val function: FunctionDecl) : StubOrigin()
 
-    // TODO: Unused, remove.
-    class FunctionParameter(val parameter: Parameter) : StubOrigin()
-
     class Struct(val struct: StructDecl) : StubOrigin()
+
+    class StructMember(
+            val member: org.jetbrains.kotlin.native.interop.indexer.StructMember
+    ) : StubOrigin()
 
     class CxxClass(val cxxClass: CxxClassDecl) : StubOrigin()
 
@@ -186,8 +205,15 @@ sealed class AnnotationStub(val classifier: Classifier) {
         class Symbol(val symbolName: String) : CCall(cCallClassifier)
     }
 
-    class CStruct(val struct: String) :
-            AnnotationStub(Classifier.topLevel(cinteropInternalPackage, "CStruct"))
+    class CStruct(val struct: String) : AnnotationStub(cStructClassifier) {
+        class MemberAt(val offset: Long) : AnnotationStub(cStructClassifier.nested("MemberAt"))
+
+        class ArrayMemberAt(val offset: Long) : AnnotationStub(cStructClassifier.nested("ArrayMemberAt"))
+
+        class BitField(val offset: Long, val size: Int) : AnnotationStub(cStructClassifier.nested("BitField"))
+
+        class VarType(val size: Long, val align: Int) : AnnotationStub(cStructClassifier.nested("VarType"))
+    }
 
     class CNaturalStruct(val members: List<StructMember>) :
             AnnotationStub(Classifier.topLevel(cinteropPackage, "CNaturalStruct"))
@@ -201,8 +227,16 @@ sealed class AnnotationStub(val classifier: Classifier) {
     class PublishedApi :
             AnnotationStub(Classifier.topLevel("kotlin", "PublishedApi"))
 
+    class CEnumEntryAlias(val entryName: String) :
+            AnnotationStub(Classifier.topLevel(cinteropInternalPackage, "CEnumEntryAlias"))
+
+    class CEnumVarTypeSize(val size: Int) :
+            AnnotationStub(Classifier.topLevel(cinteropInternalPackage, "CEnumVarTypeSize"))
+
     private companion object {
         val cCallClassifier = Classifier.topLevel(cinteropInternalPackage, "CCall")
+
+        val cStructClassifier = Classifier.topLevel(cinteropInternalPackage, "CStruct")
     }
 }
 
@@ -222,7 +256,8 @@ class PropertyStub(
         val modality: MemberStubModality = MemberStubModality.FINAL,
         val receiverType: StubType? = null,
         override val annotations: List<AnnotationStub> = emptyList(),
-        val origin: StubOrigin
+        val origin: StubOrigin,
+        val isOverride: Boolean = false
 ) : StubIrElement, AnnotationHolder {
     sealed class Kind {
         class Val(
@@ -293,7 +328,7 @@ sealed class ClassStub : StubContainer(), StubElementWithOrigin, AnnotationHolde
             override val superClassInit: SuperClassInit? = null,
             override val interfaces: List<StubType> = emptyList(),
             override val properties: List<PropertyStub> = emptyList(),
-            override val origin: StubOrigin = StubOrigin.Synthetic,
+            override val origin: StubOrigin = StubOrigin.Synthetic.CompanionObject,
             override val annotations: List<AnnotationStub> = emptyList(),
             override val childrenClasses: List<ClassStub> = emptyList(),
             override val simpleContainers: List<SimpleStubContainer> = emptyList()
@@ -344,7 +379,6 @@ class FunctionParameterStub(
 ) : AnnotationHolder
 
 enum class MemberStubModality {
-    OVERRIDE,
     OPEN,
     FINAL,
     ABSTRACT
@@ -411,6 +445,11 @@ sealed class PropertyAccessor : FunctionalStub {
             override val annotations: List<AnnotationStub> = emptyList()
             val typeParameter: StubType = pointedType
         }
+
+        class GetEnumEntry(
+                val enumEntryStub: EnumEntryStub,
+                override val annotations: List<AnnotationStub> = emptyList()
+        ) : Getter()
     }
 
     sealed class Setter : PropertyAccessor() {
@@ -453,6 +492,7 @@ class FunctionStub(
         val receiver: ReceiverParameterStub?,
         val modality: MemberStubModality,
         val typeParameters: List<TypeParameterStub> = emptyList(),
+        val isOverride: Boolean = false,
         val kotlinFunctionAlias: String? = null
 ) : StubElementWithOrigin, FunctionalStub {
 
@@ -483,10 +523,9 @@ class ConstructorStub(
 class EnumEntryStub(
         val name: String,
         val constant: IntegralConstantStub,
-        val aliases: List<Alias>
-) {
-    class Alias(val name: String)
-}
+        val origin: StubOrigin.EnumEntry,
+        val ordinal: Int
+)
 
 class TypealiasStub(
         val alias: Classifier,

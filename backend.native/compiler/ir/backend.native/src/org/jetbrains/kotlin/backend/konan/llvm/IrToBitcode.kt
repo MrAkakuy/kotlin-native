@@ -67,7 +67,7 @@ internal fun IrClass.storageKind(context: Context): ObjectStorageKind = when {
 }
 
 val IrField.isMainOnlyNonPrimitive get() = when  {
-        descriptor.type.computePrimitiveBinaryTypeOrNull() != null -> false
+        type.computePrimitiveBinaryTypeOrNull() != null -> false
         else -> storageKind == FieldStorageKind.MAIN_THREAD
     }
 
@@ -97,14 +97,17 @@ internal class RTTIGeneratorVisitor(context: Context) : IrElementVisitorVoid {
 
     override fun visitClass(declaration: IrClass) {
         super.visitClass(declaration)
-
-        generator.generate(declaration)
-
+        if (declaration.requiresRtti()) {
+            generator.generate(declaration)
+        }
         if (declaration.isKotlinObjCClass()) {
             kotlinObjCClassInfoGenerator.generate(declaration)
         }
     }
 
+    fun dispose() {
+        generator.dispose()
+    }
 }
 
 //-------------------------------------------------------------------------//
@@ -501,20 +504,8 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         context.llvm.objects.clear()
         context.llvm.sharedObjects.clear()
 
-        val compilationUnit = if (context.shouldContainLocationDebugInfo()) {
-            val path = declaration.fileEntry.name.toFileAndFolder()
-            DICreateCompilationUnit(
-                    builder = context.debugInfo.builder,
-                    lang = DWARF.language(context.config),
-                    File = path.file,
-                    dir = path.folder,
-                    producer = DWARF.producer,
-                    isOptimized = 0,
-                    flags = "",
-                    rv = DWARF.runtimeVersion(context.config))
-        } else null
         @Suppress("UNCHECKED_CAST")
-        using(FileScope(declaration, compilationUnit as DIScopeOpaqueRef?)) {
+        using(FileScope(declaration)) {
             declaration.acceptChildrenVoid(this)
 
             if (context.llvm.fileInitializers.isEmpty() && context.llvm.objects.isEmpty() && context.llvm.sharedObjects.isEmpty())
@@ -769,7 +760,8 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
     override fun visitClass(declaration: IrClass) {
         context.log{"visitClass                     : ${ir2string(declaration)}"}
-        if (declaration.isNonGeneratedAnnotation()) {
+
+        if (declaration.isNonGeneratedAnnotation() || !declaration.requiresCodeGeneration()) {
             // For non-generated annotation classes generate only nested classes.
             declaration.declarations
                     .filterIsInstance<IrClass>()
@@ -1600,7 +1592,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             val globalAddress = context.llvmDeclarations.forStaticField(value.symbol.owner).storageAddressAccess.getAddress(
                     functionGenerationContext
             )
-            if (context.config.threadsAreAllowed && value.symbol.owner.isMainOnlyNonPrimitive)
+            if (context.config.threadsAreAllowed && value.symbol.owner.storageKind == FieldStorageKind.MAIN_THREAD)
                 functionGenerationContext.checkMainThread(currentCodeContext.exceptionHandler)
             if (value.symbol.owner.storageKind == FieldStorageKind.SHARED)
                 functionGenerationContext.freeze(valueToAssign, currentCodeContext.exceptionHandler)
@@ -1622,27 +1614,9 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
         val typePtr = pointerType(fieldInfo.classBodyType)
 
-        val bodyPtr = getObjectBodyPtr(value.parentAsClass, thisPtr)
-
-        val typedBodyPtr = functionGenerationContext.bitcast(typePtr, bodyPtr)
+        val typedBodyPtr = functionGenerationContext.bitcast(typePtr, thisPtr)
         val fieldPtr = LLVMBuildStructGEP(functionGenerationContext.builder, typedBodyPtr, fieldInfo.index, "")
         return fieldPtr!!
-    }
-
-    private fun getObjectBodyPtr(irClass: IrClass, objectPtr: LLVMValueRef): LLVMValueRef {
-        return if (irClass.isObjCClass()) {
-            assert(irClass.isKotlinObjCClass())
-
-            val objCPtr = callDirect(context.ir.symbols.interopObjCObjectRawValueGetter.owner,
-                    listOf(objectPtr), Lifetime.IRRELEVANT)
-
-            val objCDeclarations = context.llvmDeclarations.forClass(irClass).objCDeclarations!!
-            val bodyOffset = functionGenerationContext.load(objCDeclarations.bodyOffsetGlobal.llvmGlobal)
-
-            functionGenerationContext.gep(objCPtr, bodyOffset)
-        } else {
-            objectPtr
-        }
     }
 
     //-------------------------------------------------------------------------//
@@ -1665,8 +1639,8 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
             IrConstKind.Int    -> return Int32(value.value as Int).llvm
             IrConstKind.Long   -> return Int64(value.value as Long).llvm
             IrConstKind.String -> return evaluateStringConst(value as IrConst<String>)
-            IrConstKind.Float  -> return LLVMConstRealOfString(floatType, (value.value as Float).toString())!!
-            IrConstKind.Double -> return LLVMConstRealOfString(doubleType, (value.value as Double).toString())!!
+            IrConstKind.Float  -> return Float32(value.value as Float).llvm
+            IrConstKind.Double -> return Float64(value.value as Double).llvm
         }
         TODO(ir2string(value))
     }
@@ -1691,8 +1665,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
         var bbExit : LLVMBasicBlockRef? = null
         var resultPhi : LLVMValueRef? = null
-        private val functionScope: DIScopeOpaqueRef?
-            get() = returnableBlock.inlineFunctionSymbol?.owner?.scope()
+        private val functionScope by lazy { returnableBlock.inlineFunctionSymbol?.owner?.scope() }
         private val outerScope = currentCodeContext.scope()
 
         private fun getExit(): LLVMBasicBlockRef {
@@ -1765,7 +1738,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
 
     //-------------------------------------------------------------------------//
 
-    private open inner class FileScope(val file: IrFile, private val compilationUnit: DIScopeOpaqueRef? = null) : InnerScopeImpl() {
+    private open inner class FileScope(val file: IrFile) : InnerScopeImpl() {
         override fun fileScope(): CodeContext? = this
 
         override fun location(line: Int, column: Int) = scope()?.let { LocationInfo(it, line, column) }
@@ -1778,10 +1751,6 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         }
 
         override fun scope() = scope
-        fun diCompilationUnit(): DIScopeOpaqueRef? = compilationUnit ?:
-          (this.outerContext.fileScope() as? FileScope)?.diCompilationUnit() ?:
-            error("no compilation unit found")
-
     }
 
     //-------------------------------------------------------------------------//
@@ -1815,11 +1784,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
         val bbExit = returnableBlockScope.bbExit
         if (bbExit != null) {
             if (!functionGenerationContext.isAfterTerminator()) {                 // TODO should we solve this problem once and for all
-                if (returnableBlockScope.resultPhi != null) {
-                    functionGenerationContext.unreachable()
-                } else {
-                    functionGenerationContext.br(bbExit)
-                }
+                functionGenerationContext.unreachable()
             }
             functionGenerationContext.positionAtEnd(bbExit)
         }
@@ -1989,7 +1954,7 @@ internal class CodeGeneratorVisitor(val context: Context, val lifetimes: Map<IrE
     @Suppress("UNCHECKED_CAST")
     private fun diFunctionScope(name: String, linkageName: String, startLine: Int, subroutineType: DISubroutineTypeRef) = DICreateFunction(
                 builder = context.debugInfo.builder,
-                scope = (currentCodeContext.fileScope() as FileScope).diCompilationUnit(),
+                scope = context.debugInfo.compilationUnit,
                 name = name,
                 linkageName = linkageName,
                 file = file().file(),

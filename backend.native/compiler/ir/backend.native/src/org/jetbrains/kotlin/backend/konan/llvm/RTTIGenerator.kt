@@ -101,7 +101,10 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
                     extendedInfo,
 
-                    Int32(KotlinAbiVersion.CURRENT.version),
+                    // TODO: it used to be a single int32 ABI version,
+                    // but klib abi version is not an int anymore.
+                    // So now this field is just reserved to preserve the layout.
+                    Int32(0),
 
                     Int32(size),
 
@@ -185,6 +188,20 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         return LLVMStoreSizeOfType(llvmTargetData, classType).toInt()
     }
 
+    private fun getClassId(irClass: IrClass): Int {
+        if (irClass.isKotlinObjCClass()) return 0
+        val hierarchyInfo = if (context.ghaEnabled()) {
+            context.getLayoutBuilder(irClass).hierarchyInfo
+        } else {
+            ClassGlobalHierarchyInfo.DUMMY
+        }
+        return if (irClass.isInterface) {
+            hierarchyInfo.interfaceId
+        } else {
+            hierarchyInfo.classIdLo
+        }
+    }
+
     fun generate(irClass: IrClass) {
 
         val className = irClass.fqNameForIrSerialization
@@ -195,11 +212,16 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
         val instanceSize = getInstanceSize(bodyType, className)
 
-        val superTypeOrAny = irClass.getSuperClassNotAny() ?: context.ir.symbols.any.owner
-        val superType = if (irClass.isAny()) NullPointer(runtime.typeInfoType)
-                else superTypeOrAny.typeInfoPtr
+        val superType = when {
+            irClass.isAny() -> NullPointer(runtime.typeInfoType)
+            irClass.isKotlinObjCClass() -> context.ir.symbols.any.owner.typeInfoPtr
+            else -> {
+                val superTypeOrAny = irClass.getSuperClassNotAny() ?: context.ir.symbols.any.owner
+                superTypeOrAny.typeInfoPtr
+            }
+        }
 
-        val implementedInterfaces = irClass.implementedInterfaces
+        val implementedInterfaces = irClass.implementedInterfaces.filter { it.requiresRtti() }
 
         val interfaces = implementedInterfaces.map { it.typeInfoPtr }
         val interfacesPtr = staticData.placeGlobalConstArray("kintf:$className",
@@ -235,10 +257,6 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
 
         val reflectionInfo = getReflectionInfo(irClass)
         val typeInfoGlobal = llvmDeclarations.typeInfoGlobal
-        val hierarchyInfo =
-                if (context.ghaEnabled())
-                    context.getLayoutBuilder(irClass).hierarchyInfo
-                else ClassGlobalHierarchyInfo.DUMMY
         val typeInfo = TypeInfo(
                 irClass.typeInfoPtr,
                 makeExtendedInfo(irClass),
@@ -251,9 +269,7 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                 reflectionInfo.packageName,
                 reflectionInfo.relativeName,
                 flagsFromClass(irClass),
-                if (irClass.isInterface)
-                    hierarchyInfo.interfaceId
-                else hierarchyInfo.classIdLo,
+                getClassId(irClass),
                 llvmDeclarations.writableTypeInfoGlobal?.pointer,
                 associatedObjects = genAssociatedObjects(irClass)
         )
@@ -395,6 +411,30 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
     private fun mapRuntimeType(type: LLVMTypeRef): Int =
             runtimeTypeMap[type] ?: throw Error("Unmapped type: ${llvmtype2string(type)}")
 
+    private val debugRuntimeOrNull: LLVMModuleRef? by lazy {
+        context.config.runtimeNativeLibraries.singleOrNull { it.endsWith("debug.bc")}?.let {
+            parseBitcodeFile(it)
+        }
+    }
+
+    private val debugOperations: ConstValue by lazy {
+        if (debugRuntimeOrNull != null) {
+            val external = LLVMGetNamedGlobal(debugRuntimeOrNull, "Konan_debugOperationsList")!!
+            val local = LLVMAddGlobal(context.llvmModule, LLVMGetElementType(LLVMTypeOf(external)),"Konan_debugOperationsList")!!
+            constPointer(LLVMConstBitCast(local, kInt8PtrPtr)!!)
+        } else {
+            Zero(kInt8PtrPtr)
+        }
+    }
+
+    val debugOperationsSize: ConstValue by lazy {
+        if (debugRuntimeOrNull != null) {
+            val external = LLVMGetNamedGlobal(debugRuntimeOrNull, "Konan_debugOperationsList")!!
+            Int32(LLVMGetArrayLength(LLVMGetElementType(LLVMTypeOf(external))))
+        } else
+            Int32(0)
+    }
+
     private fun makeExtendedInfo(irClass: IrClass): ConstPointer {
         // TODO: shall we actually do that?
         if (context.shouldOptimize())
@@ -404,12 +444,14 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
         val llvmDeclarations = context.llvmDeclarations.forClass(irClass)
         val bodyType = llvmDeclarations.bodyType
         val elementType = arrayClasses[className]
+
         val value = if (elementType != null) {
             // An array type.
             val runtimeElementType = mapRuntimeType(elementType)
             Struct(runtime.extendedTypeInfoType,
                     Int32(-runtimeElementType),
-                    NullPointer(int32Type), NullPointer(int8Type), NullPointer(kInt8Ptr))
+                    NullPointer(int32Type), NullPointer(int8Type), NullPointer(kInt8Ptr),
+                    debugOperationsSize, debugOperations)
         } else {
             data class FieldRecord(val offset: Int, val type: Int, val name: String)
             val fields = getStructElements(bodyType).drop(1).mapIndexed { index, type ->
@@ -424,7 +466,10 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                     fields.map { Int8(it.type.toByte()) })
             val namesPtr = staticData.placeGlobalConstArray("kextname:$className", kInt8Ptr,
                     fields.map { staticData.placeCStringLiteral(it.name) })
-            Struct(runtime.extendedTypeInfoType, Int32(fields.size), offsetsPtr, typesPtr, namesPtr)
+
+            Struct(runtime.extendedTypeInfoType, Int32(fields.size), offsetsPtr, typesPtr, namesPtr,
+                    debugOperationsSize, debugOperations)
+
         }
         val result = staticData.placeGlobal("", value)
         result.setConstant(true)
@@ -565,6 +610,10 @@ internal class RTTIGenerator(override val context: Context) : ContextUtils {
                         .toList().reversed()
                         .joinToString(".") { it.name.asString() }
         )
+    }
+
+    fun dispose() {
+        debugRuntimeOrNull?.let { LLVMDisposeModule(it) }
     }
 }
 

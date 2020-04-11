@@ -84,7 +84,7 @@ fun Project.getFilesToCompile(compile: List<String>, exclude: List<String>): Lis
         project.file(f)
                 .walk()
                 .filter { it.isFile && it.name.endsWith(".kt") && !excludeFiles.contains(it.absolutePath) }
-                .map(File::getAbsolutePath)
+                .map{ it.absolutePath }
                 .asIterable()
     }
 }
@@ -123,6 +123,17 @@ fun String.sameDependenciesAs(task: Task) {
 fun Task.sameDependenciesAs(task: Task) {
     val dependencies = task.dependsOn.toList() // save to the list, otherwise it will cause cyclic dependency.
     this.dependsOn(dependencies)
+}
+
+/**
+ * Set dependency on [lib] built by the Konan Plugin for the [task],
+ * also make [lib] depend on `dist` and all dependencies of the [task] to make [lib] execute before the [task].
+ */
+fun Project.dependOnKonanBuildingTask(lib: String, target: KonanTarget, task: Task) {
+    val libTask = "compileKonan${lib.capitalize()}${target.name.capitalize()}"
+    this.dependsOnDist(libTask)
+    libTask.sameDependenciesAs(task)
+    task.dependsOn(libTask)
 }
 
 //endregion
