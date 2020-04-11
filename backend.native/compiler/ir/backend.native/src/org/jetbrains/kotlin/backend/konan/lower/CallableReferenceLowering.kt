@@ -41,6 +41,11 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
 
     private object DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL : IrDeclarationOriginImpl("FUNCTION_REFERENCE_IMPL")
 
+    companion object {
+        fun isLoweredCallableReference(declaration: IrDeclaration): Boolean =
+                declaration.origin == DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL
+    }
+
     private val kTypeGenerator = KTypeGenerator(context)
 
     override fun lower(irFile: IrFile) {
@@ -165,7 +170,8 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                     isData = false,
                     isExternal = false,
                     isInline = false,
-                    isExpect = false
+                    isExpect = false,
+                    isFun = false
             ).apply {
                 it.bind(this)
                 parent = this@FunctionReferenceBuilder.parent
@@ -262,7 +268,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
                 parent = functionReferenceClass
                 functionReferenceClass.declarations += this
 
-                boundFunctionParameters.mapIndexedTo(valueParameters) { index, parameter ->
+                valueParameters += boundFunctionParameters.mapIndexed { index, parameter ->
                     parameter.copyTo(this, DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL, index,
                             type = parameter.type.substitute(typeArgumentsMap))
                 }
@@ -322,7 +328,7 @@ internal class CallableReferenceLowering(val context: Context): FileLoweringPass
 
                 this.createDispatchReceiverParameter()
 
-                superFunction.valueParameters.mapIndexedTo(valueParameters) { index, parameter ->
+                valueParameters += superFunction.valueParameters.mapIndexed { index, parameter ->
                     parameter.copyTo(function, DECLARATION_ORIGIN_FUNCTION_REFERENCE_IMPL, index,
                             type = parameter.type.substitute(typeArgumentsMap))
                 }

@@ -9,7 +9,7 @@ import kotlin.test.*
 import kotlin.reflect.*
 
 @Test
-@UseExperimental(ExperimentalAssociatedObjects::class)
+@OptIn(ExperimentalAssociatedObjects::class)
 fun testBasics1() {
     assertSame(Bar, Foo::class.findAssociatedObject<Associated1>())
     assertSame(Baz, Foo::class.findAssociatedObject<Associated2>())
@@ -18,17 +18,17 @@ fun testBasics1() {
     assertSame(null, Bar::class.findAssociatedObject<Associated1>())
 }
 
-@UseExperimental(ExperimentalAssociatedObjects::class)
+@OptIn(ExperimentalAssociatedObjects::class)
 @AssociatedObjectKey
 @Retention(AnnotationRetention.BINARY)
 annotation class Associated1(val kClass: KClass<*>)
 
-@UseExperimental(ExperimentalAssociatedObjects::class)
+@OptIn(ExperimentalAssociatedObjects::class)
 @AssociatedObjectKey
 @Retention(AnnotationRetention.BINARY)
 annotation class Associated2(val kClass: KClass<*>)
 
-@UseExperimental(ExperimentalAssociatedObjects::class)
+@OptIn(ExperimentalAssociatedObjects::class)
 @AssociatedObjectKey
 @Retention(AnnotationRetention.BINARY)
 annotation class Associated3(val kClass: KClass<*>)
@@ -41,25 +41,34 @@ object Bar
 object Baz
 
 @Test
-@UseExperimental(ExperimentalAssociatedObjects::class)
+@OptIn(ExperimentalAssociatedObjects::class)
 fun testGlobalOptimizations1() {
     val i1 = I1ImplHolder::class.findAssociatedObject<Associated1>()!! as I1
     assertEquals(42, i1.foo())
+    val c = C(null)
+    i1.bar(c)
+    assertEquals("zzz", c.list!![0])
 }
+
+private class C(var list: List<String>?)
 
 private interface I1 {
     fun foo(): Int
+    fun bar(c: C)
 }
 
 private object I1Impl : I1 {
     override fun foo() = 42
+    override fun bar(c: C) {
+        c.list = mutableListOf("zzz")
+    }
 }
 
 @Associated1(I1Impl::class)
 private class I1ImplHolder
 
 @Test
-@UseExperimental(ExperimentalAssociatedObjects::class)
+@OptIn(ExperimentalAssociatedObjects::class)
 fun testGlobalOptimizations2() {
     val i2 = I2ImplHolder()::class.findAssociatedObject<Associated1>()!! as I2
     assertEquals(17, i2.foo())

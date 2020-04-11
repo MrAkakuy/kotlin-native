@@ -11,6 +11,7 @@ import org.jetbrains.kotlin.backend.konan.ir.*
 import org.jetbrains.kotlin.backend.konan.isObjCClass
 import org.jetbrains.kotlin.backend.konan.llvm.longName
 import org.jetbrains.kotlin.descriptors.*
+import org.jetbrains.kotlin.descriptors.annotations.AnnotationDescriptor
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.descriptors.IrBuiltIns
 import org.jetbrains.kotlin.ir.expressions.IrConst
@@ -20,6 +21,10 @@ import org.jetbrains.kotlin.ir.symbols.IrFunctionSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.types.isUnit
 import org.jetbrains.kotlin.ir.util.*
+import org.jetbrains.kotlin.resolve.annotations.argumentValue
+import org.jetbrains.kotlin.resolve.constants.StringValue
+import org.jetbrains.kotlin.resolve.descriptorUtil.module
+import org.jetbrains.kotlin.utils.addToStdlib.safeAs
 
 /**
  * List of all implemented interfaces (including those which implemented by a super class)
@@ -257,14 +262,18 @@ fun IrDeclaration.findTopLevelDeclaration(): IrDeclaration = when {
 
 internal val IrClass.isFrozen: Boolean
     get() = annotations.hasAnnotation(KonanFqNames.frozen) ||
-            // RTTI is used for non-reference type box or Objective-C object wrapper:
-            !this.defaultType.binaryTypeIsReference() || this.isObjCClass()
+            // RTTI is used for non-reference type box:
+            !this.defaultType.binaryTypeIsReference()
 
 fun IrConstructorCall.getAnnotationStringValue() = (getValueArgument(0) as? IrConst<String>)?.value
 
 fun IrConstructorCall.getAnnotationStringValue(name: String): String {
     val parameter = symbol.owner.valueParameters.single { it.name.asString() == name }
     return (getValueArgument(parameter.index) as IrConst<String>).value
+}
+
+fun AnnotationDescriptor.getAnnotationStringValue(name: String): String {
+    return argumentValue(name)?.safeAs<StringValue>()?.value ?: error("Expected value $name at annotation $this")
 }
 
 fun <T> IrConstructorCall.getAnnotationValueOrNull(name: String): T? {
@@ -285,3 +294,6 @@ fun IrFunction.externalSymbolOrThrow(): String? {
 }
 
 val IrFunction.isBuiltInOperator get() = origin == IrBuiltIns.BUILTIN_OPERATOR
+
+fun IrDeclaration.isFromMetadataInteropLibrary() =
+        descriptor.module.isFromInteropLibrary()

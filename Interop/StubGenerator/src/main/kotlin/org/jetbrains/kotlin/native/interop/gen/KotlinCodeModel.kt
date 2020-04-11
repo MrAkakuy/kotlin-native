@@ -60,11 +60,11 @@ data class Classifier(
         return this.copy(nestedNames = nestedNames + name)
     }
 
-    val relativeFqName: String get() = buildString {
-        append(topLevelName.asSimpleName())
+    fun getRelativeFqName(asSimpleName: Boolean = true): String = buildString {
+        append(topLevelName.run { if (asSimpleName) asSimpleName() else this })
         nestedNames.forEach {
             append('.')
-            append(it.asSimpleName())
+            append(it.run { if (asSimpleName) asSimpleName() else this })
         }
     }
 
@@ -73,7 +73,7 @@ data class Classifier(
             append(pkg)
             append('.')
         }
-        append(relativeFqName)
+        append(getRelativeFqName())
     }
 }
 
@@ -217,6 +217,9 @@ object KotlinTypes {
     val objCObjectBase by InteropClassifier
     val objCObjectBaseMeta by InteropClassifier
 
+    val objCBlockVar by InteropClassifier
+    val objCNotImplementedVar by InteropClassifier
+
     val cValue by InteropClassifier
 
     private open class ClassifierAtPackage(val pkg: String) {
@@ -263,7 +266,7 @@ abstract class KotlinFile(
 
     override fun reference(classifier: Classifier): String = if (classifier.topLevelName in namesToBeDeclared) {
         if (classifier.pkg == this.pkg) {
-            classifier.relativeFqName
+            classifier.getRelativeFqName()
         } else {
             // Don't import if would clash with own declaration:
             classifier.fqName
@@ -275,7 +278,7 @@ abstract class KotlinFile(
     } else {
         if (tryImport(classifier)) {
             // Is successfully imported:
-            classifier.relativeFqName
+            classifier.getRelativeFqName()
         } else {
             classifier.fqName
         }
@@ -298,7 +301,7 @@ abstract class KotlinFile(
 
         if (!classifier.isTopLevel) {
             throw IllegalArgumentException(
-                    "'${classifier.relativeFqName}' is not top-level thus can't be declared at file scope"
+                    "'${classifier.getRelativeFqName()}' is not top-level thus can't be declared at file scope"
             )
         }
 
@@ -331,17 +334,6 @@ abstract class KotlinFile(
 
 }
 
-data class KotlinParameter(
-        val name: String,
-        val type: KotlinType,
-        val isVararg: Boolean,
-        val annotations: List<String>
-) {
-    fun render(scope: KotlinScope) = buildString {
-        annotations.forEach { append("$it ") }
-        if (isVararg) append("vararg ")
-        append(name.asSimpleName())
-        append(": ")
-        append(type.render(scope))
-    }
-}
+// Try to use the provided name. If failed, mangle it with underscore and try again:
+internal tailrec fun getTopLevelPropertyDeclarationName(scope: KotlinScope, name: String): String =
+        scope.declareProperty(name) ?: getTopLevelPropertyDeclarationName(scope, name + "_")

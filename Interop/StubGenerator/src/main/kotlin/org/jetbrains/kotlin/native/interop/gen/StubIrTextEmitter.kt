@@ -154,19 +154,20 @@ class StubIrTextEmitter(
             }
             val header = renderClassHeader(element)
             when {
-                element is ClassStub.Simple && element.children.isEmpty() -> out(header)
-                element is ClassStub.Companion && element.children.isEmpty() -> out(header)
+                element.children.isEmpty() -> out(header)
                 else -> block(header) {
                     if (element is ClassStub.Enum) {
-                        emitEnumBody(element)
-                    } else {
-                        element.children
-                                // We render a primary constructor as part of a header.
-                                .filterNot { it is ConstructorStub && it.isPrimary }
-                                .forEach {
-                                    emitEmptyLine()
-                                    it.accept(this, element)
-                                }
+                        emitEnumEntries(element)
+                    }
+                    element.children
+                            // We render a primary constructor as part of a header.
+                            .filterNot { it is ConstructorStub && it.isPrimary }
+                            .forEach {
+                                emitEmptyLine()
+                                it.accept(this, element)
+                            }
+                    if (element is ClassStub.Enum) {
+                        emitEnumVarClass(element)
                     }
                 }
             }
@@ -185,8 +186,9 @@ class StubIrTextEmitter(
                 val parameters = element.parameters.joinToString(prefix = "(", postfix = ")") { renderFunctionParameter(it) }
                 val receiver = element.receiver?.let { renderFunctionReceiver(it) + "." } ?: ""
                 val typeParameters = renderTypeParameters(element.typeParameters)
+                val override = if (element.isOverride) "override " else ""
                 val modality = renderMemberModality(element.modality, owner)
-                "${modality}fun$typeParameters $receiver${element.name.asSimpleName()}$parameters: ${renderStubType(element.returnType)}"
+                "$override${modality}fun$typeParameters $receiver${element.name.asSimpleName()}$parameters: ${renderStubType(element.returnType)}"
             }
             if (!nativeBridges.isSupported(element)) {
                 sequenceOf(
@@ -201,6 +203,8 @@ class StubIrTextEmitter(
             when {
                 element.external -> out("external $header")
                 element.isOptionalObjCMethod() -> out("$header = optional()")
+                element.origin is StubOrigin.Synthetic.EnumByValue ->
+                    out("$header = values().find { it.value == value }!!")
                 owner != null && owner.isInterface -> out(header)
                 else -> block(header) {
                     functionBridgeBodies.getValue(element).forEach(out)
@@ -256,37 +260,17 @@ class StubIrTextEmitter(
     // About method naming convention:
     // - "emit" prefix means that method will call `out` by itself.
     // - "render" prefix means that method returns string that should be emitted by caller.
-    private fun emitEnumBody(enum: ClassStub.Enum) {
-
+    private fun emitEnumEntries(enum: ClassStub.Enum) {
         enum.entries.forEach {
             out(renderEnumEntry(it) + ",")
         }
+        out(";")
+    }
 
+    private fun emitEnumVarClass(enum: ClassStub.Enum) {
         val simpleKotlinName = enum.classifier.topLevelName.asSimpleName()
         val typeMirror = builderResult.bridgeGenerationComponents.enumToTypeMirror.getValue(enum)
-        val baseKotlinType = typeMirror.argType.render(kotlinFile)
         val basePointedTypeName = typeMirror.pointedType.render(kotlinFile)
-
-        out(";")
-        emitEmptyLine()
-        enum.properties.forEach {
-            emitProperty(it, enum)
-            emitEmptyLine()
-        }
-
-        block("companion object") {
-            enum.entries.forEach { entry ->
-                entry.aliases.forEach {
-                    out("val ${it.name.asSimpleName()} = ${entry.name.asSimpleName()}")
-                }
-
-            }
-            emitEmptyLine()
-
-            out("fun byValue(value: $baseKotlinType) = " +
-                    "$simpleKotlinName.values().find { it.value == value }!!")
-        }
-        emitEmptyLine()
         block("class Var(rawPtr: NativePtr) : CEnumVar(rawPtr)") {
             out("companion object : Type($basePointedTypeName.size.toInt())")
             out("var value: $simpleKotlinName")
@@ -295,14 +279,11 @@ class StubIrTextEmitter(
         }
     }
 
-    // Try to use the provided name. If failed, mangle it with underscore and try again:
-    private tailrec fun getTopLevelPropertyDeclarationName(scope: KotlinScope, name: String): String =
-            scope.declareProperty(name) ?: getTopLevelPropertyDeclarationName(scope, name + "_")
-
     private fun emitProperty(element: PropertyStub, owner: StubContainer?) {
         if (element in bridgeBuilderResult.excludedStubs) return
 
-        val modality = renderMemberModality(element.modality, owner)
+        val override = if (element.isOverride) "override " else ""
+        val modality = "$override${renderMemberModality(element.modality, owner)}"
         val receiver = if (element.receiverType != null) "${renderStubType(element.receiverType)}." else ""
         val name = if (owner?.isTopLevelContainer == true) {
             getTopLevelPropertyDeclarationName(kotlinFile, element.name)
@@ -374,7 +355,6 @@ class StubIrTextEmitter(
                 ""
             } else
                 when (modality) {
-                    MemberStubModality.OVERRIDE -> "override "
                     MemberStubModality.OPEN -> "open "
                     MemberStubModality.FINAL -> "final "
                     MemberStubModality.ABSTRACT -> "abstract "
@@ -400,7 +380,10 @@ class StubIrTextEmitter(
         }
         val constructorParams = classStub.explicitPrimaryConstructor?.parameters?.let(this::renderConstructorParams) ?: ""
         val inheritance = mutableListOf<String>().apply {
-            addIfNotNull(classStub.superClassInit?.let { renderSuperInit(it) })
+            // Enum inheritance is implicit.
+            if (classStub !is ClassStub.Enum) {
+                addIfNotNull(classStub.superClassInit?.let { renderSuperInit(it) })
+            }
             addAll(classStub.interfaces.map { renderStubType(it) })
         }.let { if (it.isNotEmpty()) " : ${it.joinToString()}" else "" }
 
@@ -458,7 +441,7 @@ class StubIrTextEmitter(
     }
 
     private fun renderValueUsage(value: ValueStub): String = when (value) {
-        is StringConstantStub -> value.value
+        is StringConstantStub -> value.value.quoteAsKotlinLiteral()
         is IntegralConstantStub -> renderIntegralConstant(value)!!
         is DoubleConstantStub -> renderDoubleConstant(value)!!
         is GetConstructorParameter -> value.constructorParameterStub.name
@@ -509,6 +492,13 @@ class StubIrTextEmitter(
             "@Deprecated(${annotationStub.message.quoteAsKotlinLiteral()}, " +
                     "ReplaceWith(${annotationStub.replaceWith.quoteAsKotlinLiteral()}), " +
                     "DeprecationLevel.ERROR)"
+        is AnnotationStub.CEnumEntryAlias,
+        is AnnotationStub.CEnumVarTypeSize,
+        is AnnotationStub.CStruct.MemberAt,
+        is AnnotationStub.CStruct.ArrayMemberAt,
+        is AnnotationStub.CStruct.BitField,
+        is AnnotationStub.CStruct.VarType ->
+            error("${annotationStub.classifier.fqName} annotation is unsupported in textual mode")
     }
 
     private fun renderEnumEntry(enumEntryStub: EnumEntryStub): String =
@@ -559,6 +549,8 @@ class StubIrTextEmitter(
         is PropertyAccessor.Getter.ReadBits -> {
             propertyAccessorBridgeBodies.getValue(accessor)
         }
+
+        is PropertyAccessor.Getter.GetEnumEntry -> accessor.enumEntryStub.name
 
         is PropertyAccessor.Setter.SimpleSetter -> when {
             accessor in propertyAccessorBridgeBodies -> propertyAccessorBridgeBodies.getValue(accessor)

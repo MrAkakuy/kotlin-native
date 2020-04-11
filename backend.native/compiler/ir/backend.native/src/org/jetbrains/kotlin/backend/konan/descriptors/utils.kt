@@ -50,8 +50,12 @@ fun DeclarationDescriptor.findTopLevelDescriptor(): DeclarationDescriptor {
     else this.containingDeclaration!!.findTopLevelDescriptor()
 }
 
-val ModuleDescriptor.isForwardDeclarationModule get() =
-    name == Name.special("<forward declarations>")
+val ModuleDescriptor.isForwardDeclarationModule: Boolean
+    get() {
+        // TODO: use KlibResolvedModuleDescriptorsFactoryImpl.FORWARD_DECLARATIONS_MODULE_NAME instead of
+        //  manually created Name instance
+        return name == Name.special("<forward declarations>")
+    }
 
 fun BaseKotlinLibrary.isInteropLibrary() =
         manifestProperties["ir_provider"] == KLIB_INTEROP_IR_PROVIDER_IDENTIFIER

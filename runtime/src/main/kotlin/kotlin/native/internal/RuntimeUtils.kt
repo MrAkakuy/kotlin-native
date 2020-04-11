@@ -29,6 +29,7 @@ fun ThrowClassCastException(instance: Any, typeInfo: NativePtr): Nothing {
     throw ClassCastException("${instance::class.qualifiedName} cannot be cast to ${clazz.qualifiedName}")
 }
 
+@ExportForCppRuntime
 fun ThrowTypeCastException(): Nothing {
     throw TypeCastException()
 }
@@ -108,6 +109,9 @@ internal fun ReportUnhandledException(throwable: Throwable) {
     print("Uncaught Kotlin exception: ")
     throwable.printStackTrace()
 }
+
+@SymbolName("TerminateWithUnhandledException")
+internal external fun TerminateWithUnhandledException(throwable: Throwable)
 
 @ExportForCppRuntime
 internal fun ExceptionReporterLaunchpad(reporter: (Throwable) -> Unit, throwable: Throwable) {

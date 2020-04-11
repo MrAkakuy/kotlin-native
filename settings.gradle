@@ -30,6 +30,7 @@ include ':common'
 include ':backend.native:tests'
 include ':backend.native:debugger-tests'
 include ':utilities'
+include 'dependencyPacker'
 
 include ':performance'
 include ':performance:ring'
@@ -38,6 +39,7 @@ include ':performance:helloworld'
 include ':performance:numerical'
 include ':performance:videoplayer'
 include ':performance:framework'
+include ':performance:startup'
 if (System.getProperty("os.name") == "Mac OS X") {
     include ':performance:objcinterop'
     include ':performance:swiftinterop'
@@ -61,7 +63,7 @@ if (hasProperty("kotlinProjectPath")) {
             substitute module("org.jetbrains.kotlin:kotlin-util-io:$kotlinVersion") with project(':kotlin-util-io')
             substitute module("org.jetbrains.kotlin:kotlin-util-klib:$kotlinVersion") with project(':kotlin-util-klib')
             substitute module("org.jetbrains.kotlin:kotlin-util-klib-metadata:$kotlinVersion") with project(':kotlin-util-klib-metadata')
-            substitute module("org.jetbrains.kotlin:kotlin-native-utils:$kotlinVersion") with project(':kotlin-native:kotlin-native-utils')
+            substitute module("org.jetbrains.kotlin:kotlin-native-utils:$kotlinVersion") with project(':native:kotlin-native-utils')
             substitute module("org.jetbrains.kotlin:kotlin-reflect:$kotlinVersion") with project(':kotlin-reflect')
             substitute module("org.jetbrains.kotlinx:kotlinx-metadata-klib") with project(':kotlinx-metadata-klib')
         }
@@ -70,6 +72,5 @@ if (hasProperty("kotlinProjectPath")) {
 
 includeBuild 'shared'
 includeBuild 'build-tools'
-includeBuild 'extracted/konan.metadata'
-includeBuild 'extracted/konan.serializer'
 includeBuild 'tools/kotlin-native-gradle-plugin'
+

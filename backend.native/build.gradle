@@ -129,7 +129,6 @@ configurations {
     kotlin_stdlib_jar
     kotlin_reflect_jar
     kotlin_script_runtime_jar
-    kotlin_native_utils_jar
     trove4j_jar
     kotlinCommonSources
 
@@ -149,7 +148,6 @@ dependencies {
     kotlin_stdlib_jar "$kotlinStdLibModule@jar"
     kotlin_reflect_jar "$kotlinReflectModule@jar"
     kotlin_script_runtime_jar "$kotlinScriptRuntimeModule@jar"
-    kotlin_native_utils_jar "$kotlinNativeUtilsModule@jar"
 
     [kotlinCommonStdlibModule, kotlinTestCommonModule, kotlinTestAnnotationsCommonModule].each {
         kotlinCommonSources(it) { transitive = false }
@@ -162,12 +160,10 @@ dependencies {
     compilerCompile kotlinNativeInterop['hash'].configuration
     compilerCompile kotlinNativeInterop['files'].configuration
     compilerCompile "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
-    compilerCompile "org.jetbrains.kotlin:konan.serializer:$konanVersion"
 
     cli_bcCompile kotlinCompilerModule
     cli_bcCompile "org.jetbrains.kotlin:kotlin-native-shared:$konanVersion"
     cli_bcCompile sourceSets.compiler.output
-    cli_bcCompile "org.jetbrains.kotlin:konan.serializer:$konanVersion"
 
     bc_frontendCompile kotlinCompilerModule
 
@@ -219,9 +215,9 @@ targetList.each { target ->
         args = [*konanArgs,
                 '-output', project(':runtime').file("build/${target}Stdlib"),
                 '-produce', 'library', '-module-name', 'stdlib', '-XXLanguage:+AllowContractsForCustomFunctions',
-                '-Xmulti-platform', '-Xuse-experimental=kotlin.Experimental', '-XXLanguage:+InlineClasses',
-                '-Xuse-experimental=kotlin.contracts.ExperimentalContracts',
-                '-Xuse-experimental=kotlin.ExperimentalMultiplatform',
+                '-Xmulti-platform', '-Xopt-in=kotlin.RequiresOptIn', '-Xinline-classes',
+                '-Xopt-in=kotlin.contracts.ExperimentalContracts',
+                '-Xopt-in=kotlin.ExperimentalMultiplatform',
                 '-Xallow-result-return-type',
                 commonSrc.absolutePath,
                 "-Xcommon-sources=${commonSrc.absolutePath}",
@@ -252,7 +248,7 @@ jar {
     dependsOn ':runtime:hostRuntime', 'external_jars'
 }
 
-def externalJars = ['compiler', 'stdlib', 'reflect', 'script_runtime', 'native_utils']
+def externalJars = ['compiler', 'stdlib', 'reflect', 'script_runtime']
 
 task trove4jCopy(type: Copy) {
     from configurations.getByName("trove4j_jar") {

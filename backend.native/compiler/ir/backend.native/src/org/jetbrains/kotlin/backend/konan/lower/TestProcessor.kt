@@ -107,7 +107,8 @@ internal class TestProcessor (val context: Context) {
                             registerTestCase.valueParameters[1].type,
                             it.function.symbol,
                             typeArgumentsCount = 0,
-                            valueArgumentsCount = 0))
+                            valueArgumentsCount = 0,
+                            reflectionTarget = null))
                     putValueArgument(2, irBoolean(it.ignored))
                 }
             } else {
@@ -127,7 +128,8 @@ internal class TestProcessor (val context: Context) {
                             registerFunction.valueParameters[1].type,
                             it.function.symbol,
                             typeArgumentsCount = 0,
-                            valueArgumentsCount = 0))
+                            valueArgumentsCount = 0,
+                            reflectionTarget = null))
                 }
             }
         }
@@ -491,7 +493,8 @@ internal class TestProcessor (val context: Context) {
                 isData = false,
                 isExternal = false,
                 isInline = false,
-                isExpect = false
+                isExpect = false,
+                isFun = false
         ).apply {
             descriptor.bind(this)
             createParameterDeclarations()

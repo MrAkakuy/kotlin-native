@@ -93,6 +93,7 @@ class StubIrBridgeBuilder(
                 when {
                     element.external -> tryProcessCCallAnnotation(element)
                     element.isOptionalObjCMethod() -> { }
+                    element.origin is StubOrigin.Synthetic.EnumByValue -> { }
                     owner != null && owner.isInterface -> { }
                     else -> generateBridgeBody(element)
                 }
@@ -204,7 +205,11 @@ class StubIrBridgeBuilder(
                         val extra = builderResult.wrapperGenerationComponents.getterToWrapperInfo.getValue(accessor)
                         val cCallAnnotation = accessor.annotations.firstIsInstanceOrNull<AnnotationStub.CCall.Symbol>()
                                 ?: error("external getter for ${extra.global.name} wasn't marked with @CCall")
-                        val wrapper = wrapperGenerator.generateCGlobalGetter(extra.global, cCallAnnotation.symbolName)
+                        val wrapper = if (extra.passViaPointer) {
+                            wrapperGenerator.generateCGlobalByPointerGetter(extra.global, cCallAnnotation.symbolName)
+                        } else {
+                            wrapperGenerator.generateCGlobalGetter(extra.global, cCallAnnotation.symbolName)
+                        }
                         simpleBridgeGenerator.insertNativeBridge(accessor, emptyList(), wrapper.lines)
                     }
                 }

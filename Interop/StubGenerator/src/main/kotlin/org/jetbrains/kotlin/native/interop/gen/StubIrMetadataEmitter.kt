@@ -12,16 +12,32 @@ import org.jetbrains.kotlin.utils.addIfNotNull
 class StubIrMetadataEmitter(
         private val context: StubIrContext,
         private val builderResult: StubIrBuilderResult,
-        private val moduleName: String
+        private val moduleName: String,
+        private val scope: KotlinScope
 ) {
     fun emit(): KlibModuleMetadata {
         val annotations = emptyList<KmAnnotation>()
-        val fragments = emitModuleFragments()
+        val fragments = emitModuleFragments(scope)
         return KlibModuleMetadata(moduleName, fragments, annotations)
     }
 
-    private fun emitModuleFragments(): List<KmModuleFragment> =
-            ModuleMetadataEmitter(context.configuration.pkgName, builderResult.stubs).emit().let(::listOf)
+    private fun emitModuleFragments(scope: KotlinScope): List<KmModuleFragment> =
+            ModuleMetadataEmitter(
+                    context.configuration.pkgName,
+                    builderResult.stubs,
+                    scope
+            ).emit().let { kmModuleFragment ->
+                // We need to create module fragment for each part of package name.
+                val pkgName = context.configuration.pkgName
+                val fakePackages = pkgName.mapIndexedNotNull { idx, char ->
+                    if (char == '.') idx else null
+                }.map { dotPosition ->
+                    KmModuleFragment().also {
+                        it.fqName = pkgName.substring(0, dotPosition)
+                    }
+                }
+                fakePackages + kmModuleFragment
+            }
 }
 
 /**
@@ -29,7 +45,8 @@ class StubIrMetadataEmitter(
  */
 internal class ModuleMetadataEmitter(
         private val packageFqName: String,
-        private val module: SimpleStubContainer
+        private val module: SimpleStubContainer,
+        private val scope: KotlinScope
 ) {
 
     fun emit(): KmModuleFragment {
@@ -74,6 +91,16 @@ internal class ModuleMetadataEmitter(
             val typeParametersInterner: Interner<TypeParameterStub> = Interner()
     )
 
+    private fun isTopLevelContainer(container: StubContainer?): Boolean =
+            container == null
+
+    private fun getPropertyNameInScope(originalName: String, container: StubContainer?): String =
+        if (isTopLevelContainer(container)) {
+            getTopLevelPropertyDeclarationName(scope, originalName)
+        } else {
+            originalName
+        }
+
     private val visitor = object : StubIrVisitor<VisitingContext, Any> {
 
         override fun visitClass(element: ClassStub, data: VisitingContext): List<KmClass> {
@@ -83,7 +110,7 @@ internal class ModuleMetadataEmitter(
                     typeParametersInterner = Interner(data.typeParametersInterner)
             )
             val children = element.children + if (element is ClassStub.Companion) {
-                listOf(ConstructorStub(isPrimary = true, visibility = VisibilityModifier.PRIVATE, origin = StubOrigin.SyntheticDefaultConstructor))
+                listOf(ConstructorStub(isPrimary = true, visibility = VisibilityModifier.PRIVATE, origin = StubOrigin.Synthetic.DefaultConstructor))
             } else emptyList()
             val elements = KmElements(children.map { it.accept(this, classVisitingContext) })
             val kmClass = with (MappingExtensions(data.typeParametersInterner)) {
@@ -100,6 +127,9 @@ internal class ModuleMetadataEmitter(
                     km.constructors += elements.constructors.toList()
                     km.companionObject = element.companion?.nestedName()
                     km.uniqId = data.uniqIds.uniqIdForClass(element)
+                    if (element is ClassStub.Enum) {
+                        element.entries.mapTo(km.klibEnumEntries) { mapEnumEntry(it, classVisitingContext) }
+                    }
                 }
             }
             // Metadata stores classes as flat list.
@@ -118,6 +148,7 @@ internal class ModuleMetadataEmitter(
         override fun visitFunction(element: FunctionStub, data: VisitingContext) =
                 with (MappingExtensions(data.typeParametersInterner)) {
                     KmFunction(element.flags, element.name).also { km ->
+                        km.receiverParameterType = element.receiver?.type?.map()
                         element.typeParameters.mapTo(km.typeParameters) { it.map() }
                         element.parameters.mapTo(km.valueParameters) { it.map() }
                         element.annotations.mapTo(km.annotations) { it.map() }
@@ -128,9 +159,11 @@ internal class ModuleMetadataEmitter(
 
         override fun visitProperty(element: PropertyStub, data: VisitingContext) =
                 with (MappingExtensions(data.typeParametersInterner)) {
-                    KmProperty(element.flags, element.name, element.getterFlags, element.setterFlags).also { km ->
+                    val name = getPropertyNameInScope(element.name, data.container)
+                    KmProperty(element.flags, name, element.getterFlags, element.setterFlags).also { km ->
                         element.annotations.mapTo(km.annotations) { it.map() }
                         km.uniqId = data.uniqIds.uniqIdForProperty(element)
+                        km.receiverParameterType = element.receiverType?.map()
                         km.returnType = element.type.map()
                         if (element.kind is PropertyStub.Kind.Var) {
                             val setter = element.kind.setter
@@ -165,6 +198,16 @@ internal class ModuleMetadataEmitter(
         override fun visitSimpleStubContainer(simpleStubContainer: SimpleStubContainer, data: VisitingContext): List<Any> =
                 simpleStubContainer.children.map { it.accept(this, data) } +
                         simpleStubContainer.simpleContainers.flatMap { visitSimpleStubContainer(it, data) }
+
+        private fun mapEnumEntry(enumEntry: EnumEntryStub, data: VisitingContext): KlibEnumEntry =
+                with (MappingExtensions(data.typeParametersInterner)) {
+                    KlibEnumEntry(
+                            name = enumEntry.name,
+                            uniqId = data.uniqIds.uniqIdForEnumEntry(enumEntry, data.container as ClassStub.Enum),
+                            ordinal = enumEntry.ordinal,
+                            annotations = mutableListOf(enumEntry.constant.mapToConstantAnnotation())
+                    )
+                }
     }
 }
 
@@ -200,7 +243,7 @@ private class MappingExtensions(
     val FunctionStub.flags: Flags
         get() = flagsOfNotNull(
                 Flag.IS_PUBLIC,
-                Flag.Function.IS_EXTERNAL,
+                Flag.Function.IS_EXTERNAL.takeIf { this.external },
                 Flag.HAS_ANNOTATIONS.takeIf { annotations.isNotEmpty() }
         ) or modality.flags
 
@@ -211,7 +254,7 @@ private class MappingExtensions(
                 append('/')
             }
             // Nested classes should dot-separated.
-            append(relativeFqName)
+            append(getRelativeFqName(asSimpleName = false))
         }
 
     val PropertyStub.flags: Flags
@@ -219,20 +262,13 @@ private class MappingExtensions(
                 Flag.IS_PUBLIC,
                 Flag.Property.IS_DECLARATION,
                 Flag.HAS_ANNOTATIONS.takeIf { annotations.isNotEmpty() },
+                Flag.Property.HAS_CONSTANT.takeIf { kind is PropertyStub.Kind.Constant },
+                Flag.Property.HAS_GETTER,
+                Flag.Property.HAS_SETTER.takeIf { kind is PropertyStub.Kind.Var },
                 when (kind) {
                     is PropertyStub.Kind.Val -> null
                     is PropertyStub.Kind.Var -> Flag.Property.IS_VAR
                     is PropertyStub.Kind.Constant -> Flag.Property.IS_CONST
-                },
-                when (kind) {
-                    is PropertyStub.Kind.Constant -> null
-                    is PropertyStub.Kind.Val,
-                    is PropertyStub.Kind.Var -> Flag.Property.HAS_GETTER
-                },
-                when (kind) {
-                    is PropertyStub.Kind.Constant -> null
-                    is PropertyStub.Kind.Val -> null
-                    is PropertyStub.Kind.Var -> Flag.Property.HAS_SETTER
                 }
         ) or modality.flags
 
@@ -240,14 +276,21 @@ private class MappingExtensions(
         get() = when (kind) {
             is PropertyStub.Kind.Val -> kind.getter.flags
             is PropertyStub.Kind.Var -> kind.getter.flags
-            is PropertyStub.Kind.Constant -> flagsOf()
+            is PropertyStub.Kind.Constant -> kind.flags
         }
+
+    val PropertyStub.Kind.Constant.flags: Flags
+        get() = flagsOfNotNull(
+                Flag.IS_PUBLIC,
+                Flag.IS_FINAL
+        )
 
     private val PropertyAccessor.Getter.flags: Flags
         get() = flagsOfNotNull(
                 Flag.HAS_ANNOTATIONS.takeIf { annotations.isNotEmpty() },
                 Flag.IS_PUBLIC,
                 Flag.IS_FINAL,
+                Flag.PropertyAccessor.IS_NOT_DEFAULT,
                 Flag.PropertyAccessor.IS_EXTERNAL.takeIf { this is PropertyAccessor.Getter.ExternalGetter }
         )
 
@@ -260,6 +303,7 @@ private class MappingExtensions(
                 Flag.HAS_ANNOTATIONS.takeIf { annotations.isNotEmpty() },
                 Flag.IS_PUBLIC,
                 Flag.IS_FINAL,
+                Flag.PropertyAccessor.IS_NOT_DEFAULT,
                 Flag.PropertyAccessor.IS_EXTERNAL.takeIf { this is PropertyAccessor.Setter.ExternalSetter }
         )
 
@@ -282,10 +326,13 @@ private class MappingExtensions(
         get() = flagsOfNotNull(
                 Flag.HAS_ANNOTATIONS.takeIf { annotations.isNotEmpty() },
                 Flag.IS_PUBLIC,
-                Flag.IS_OPEN.takeIf { this is ClassStub.Simple && this.modality == ClassStubModality.OPEN },
-                Flag.IS_FINAL.takeIf { this is ClassStub.Simple && this.modality == ClassStubModality.NONE },
+                Flag.IS_OPEN.takeIf { this is ClassStub.Simple && modality == ClassStubModality.OPEN },
+                Flag.IS_FINAL.takeIf { this is ClassStub.Simple && modality == ClassStubModality.NONE },
+                Flag.IS_ABSTRACT.takeIf { this is ClassStub.Simple
+                        && (modality == ClassStubModality.ABSTRACT || modality == ClassStubModality.INTERFACE) },
+                Flag.Class.IS_INTERFACE.takeIf { this is ClassStub.Simple && modality == ClassStubModality.INTERFACE },
                 Flag.Class.IS_COMPANION_OBJECT.takeIf { this is ClassStub.Companion },
-                Flag.Class.IS_CLASS.takeIf { this is ClassStub.Simple },
+                Flag.Class.IS_CLASS.takeIf { this is ClassStub.Simple && modality != ClassStubModality.INTERFACE },
                 Flag.Class.IS_ENUM_CLASS.takeIf { this is ClassStub.Enum }
         )
 
@@ -360,6 +407,26 @@ private class MappingExtensions(
                     ("replaceWith" to replaceWith(replaceWith)),
                     ("level" to deprecationLevel(DeprecationLevel.ERROR))
             )
+            is AnnotationStub.CEnumEntryAlias -> mapOfNotNull(
+                    ("entryName" to entryName).asAnnotationArgument()
+            )
+            is AnnotationStub.CEnumVarTypeSize -> mapOfNotNull(
+                    ("size" to KmAnnotationArgument.IntValue(size))
+            )
+            is AnnotationStub.CStruct.MemberAt -> mapOfNotNull(
+                    ("offset" to KmAnnotationArgument.LongValue(offset))
+            )
+            is AnnotationStub.CStruct.ArrayMemberAt -> mapOfNotNull(
+                    ("offset" to KmAnnotationArgument.LongValue(offset))
+            )
+            is AnnotationStub.CStruct.BitField -> mapOfNotNull(
+                    ("offset" to KmAnnotationArgument.LongValue(offset)),
+                    ("size" to KmAnnotationArgument.IntValue(size))
+            )
+            is AnnotationStub.CStruct.VarType -> mapOfNotNull(
+                    ("size" to KmAnnotationArgument.LongValue(size)),
+                    ("align" to KmAnnotationArgument.IntValue(align))
+            )
         }
         return KmAnnotation(classifier.fqNameSerialized, args)
     }
@@ -387,16 +454,21 @@ private class MappingExtensions(
     fun StubType.map(shouldExpandTypeAliases: Boolean = true): KmType = when (this) {
         is AbbreviatedType -> {
             val typeAliasClassifier = KmClassifier.TypeAlias(abbreviatedClassifier.fqNameSerialized)
+            val typeArguments = typeArguments.map { it.map(shouldExpandTypeAliases) }
+            val abbreviatedType = KmType(flags).also { km ->
+                km.classifier = typeAliasClassifier
+                km.arguments += typeArguments
+            }
             if (shouldExpandTypeAliases) {
                 // Abbreviated and expanded types have the same nullability.
                 KmType(flags).also { km ->
-                    km.abbreviatedType = KmType(flags).also { it.classifier = typeAliasClassifier }
+                    km.abbreviatedType = abbreviatedType
                     val kmUnderlyingType = underlyingType.map(true)
                     km.arguments += kmUnderlyingType.arguments
                     km.classifier = kmUnderlyingType.classifier
                 }
             } else {
-                KmType(flags).also { km -> km.classifier = typeAliasClassifier }
+                abbreviatedType
             }
         }
         is ClassifierStubType -> KmType(flags).also { km ->
@@ -417,6 +489,10 @@ private class MappingExtensions(
                 val kmType = type.map()
                 if (isVararg) {
                     km.varargElementType = kmType
+                    km.type = ClassifierStubType(
+                            Classifier.topLevel("kotlin", "Array"),
+                            listOf(TypeArgumentStub(type))
+                    ).map()
                 } else {
                     km.type = kmType
                 }
@@ -472,6 +548,12 @@ private class MappingExtensions(
             else -> error("Floating-point constant of value $value with unexpected size of $size.")
         }
     }
+
+    fun ConstantStub.mapToConstantAnnotation(): KmAnnotation =
+            KmAnnotation(
+                    determineConstantAnnotationClassifier().fqNameSerialized,
+                    mapOf("value" to mapToAnnotationArgument())
+            )
 
     private val TypeParameterType.id: Int
         get() = typeParameterDeclaration.id

@@ -67,10 +67,9 @@ internal class ClassLlvmDeclarations(
         val singletonDeclarations: SingletonLlvmDeclarations?,
         val objCDeclarations: KotlinObjCClassLlvmDeclarations?)
 
-internal class SingletonLlvmDeclarations(val instanceStorage: AddressAccess, val instanceShadowStorage: AddressAccess?)
+internal class SingletonLlvmDeclarations(val instanceStorage: AddressAccess)
 
 internal class KotlinObjCClassLlvmDeclarations(
-        val classPointerGlobal: StaticData.Global,
         val classInfoGlobal: StaticData.Global,
         val bodyOffsetGlobal: StaticData.Global
 )
@@ -157,8 +156,9 @@ private class DeclarationsGeneratorVisitor(override val context: Context) :
     }
 
     override fun visitClass(declaration: IrClass) {
-        this.classes[declaration] = createClassDeclarations(declaration)
-
+        if (declaration.requiresRtti()) {
+            this.classes[declaration] = createClassDeclarations(declaration)
+        }
         super.visitClass(declaration)
     }
 
@@ -278,29 +278,29 @@ private class DeclarationsGeneratorVisitor(override val context: Context) :
         val symbolName = "kobjref:" + qualifyInternalName(irClass)
         val instanceAddress = addKotlinGlobal(symbolName, getLLVMType(irClass.defaultType), threadLocal = threadLocal)
 
-        val instanceShadowAddress = if (threadLocal || storageKind == ObjectStorageKind.PERMANENT) null else {
-            val shadowSymbolName = "kshadowobjref:" + qualifyInternalName(irClass)
-            addKotlinGlobal(shadowSymbolName, getLLVMType(irClass.defaultType), threadLocal = true)
-        }
-
-        return SingletonLlvmDeclarations(instanceAddress, instanceShadowAddress)
+        return SingletonLlvmDeclarations(instanceAddress)
     }
 
     private fun createKotlinObjCClassDeclarations(irClass: IrClass): KotlinObjCClassLlvmDeclarations {
         val internalName = qualifyInternalName(irClass)
 
-        val classPointerGlobal = staticData.createGlobal(int8TypePtr, "kobjcclassptr:$internalName")
-
+        val isExported = irClass.isExported()
+        val classInfoSymbolName = if (isExported) {
+            irClass.kotlinObjCClassInfoSymbolName
+        } else {
+            "kobjcclassinfo:$internalName"
+        }
         val classInfoGlobal = staticData.createGlobal(
                 context.llvm.runtime.kotlinObjCClassInfo,
-                "kobjcclassinfo:$internalName"
+                classInfoSymbolName,
+                isExported = isExported
         ).apply {
             setConstant(true)
         }
 
         val bodyOffsetGlobal = staticData.createGlobal(int32Type, "kobjcbodyoffs:$internalName")
 
-        return KotlinObjCClassLlvmDeclarations(classPointerGlobal, classInfoGlobal, bodyOffsetGlobal)
+        return KotlinObjCClassLlvmDeclarations(classInfoGlobal, bodyOffsetGlobal)
     }
 
     override fun visitField(declaration: IrField) {
@@ -308,6 +308,7 @@ private class DeclarationsGeneratorVisitor(override val context: Context) :
 
         val containingClass = declaration.parent as? IrClass
         if (containingClass != null) {
+            if (!containingClass.requiresRtti()) return
             val classDeclarations = this.classes[containingClass] ?:
                 error(containingClass.descriptor.toString())
             val allFields = context.getLayoutBuilder(containingClass).fields
@@ -338,6 +339,9 @@ private class DeclarationsGeneratorVisitor(override val context: Context) :
 
         val llvmFunction = if (declaration.isExternal) {
             if (declaration.isTypedIntrinsic || declaration.isObjCBridgeBased()
+                    // All call-sites to external accessors to interop properties
+                    // are lowered by InteropLowering.
+                    || (declaration.isAccessor && declaration.isFromMetadataInteropLibrary())
                     || declaration.annotations.hasAnnotation(RuntimeNames.cCall)) return
 
             context.llvm.externalFunction(declaration.symbolName, llvmFunctionType,

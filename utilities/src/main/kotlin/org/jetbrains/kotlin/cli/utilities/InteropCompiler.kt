@@ -4,8 +4,10 @@
  */
 package org.jetbrains.kotlin.cli.utilities
 
+import org.jetbrains.kotlin.cli.bc.SHORT_MODULE_NAME_ARG
 import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.konan.target.PlatformManager
+import org.jetbrains.kotlin.native.interop.gen.jvm.InternalInteropOptions
 import org.jetbrains.kotlin.native.interop.gen.jvm.interop
 import org.jetbrains.kotlin.native.interop.tool.*
 
@@ -23,17 +25,15 @@ fun invokeInterop(flavor: String, args: Array<String>): Array<String>? {
     val noDefaultLibs = arguments.nodefaultlibs || arguments.nodefaultlibsDeprecated
     val noEndorsedLibs = arguments.noendorsedlibs
     val purgeUserLibs = arguments.purgeUserLibs
+    val nopack = arguments.nopack
     val temporaryFilesDir = arguments.tempDir
+    val moduleName = (arguments as? CInteropArguments)?.moduleName
+    val shortModuleName = (arguments as? CInteropArguments)?.shortModuleName
 
     val buildDir = File("$outputFileName-build")
     val generatedDir = File(buildDir, "kotlin")
-    val nativesDir = File(buildDir, "natives")
+    val nativesDir = File(buildDir,"natives")
     val manifest = File(buildDir, "manifest.properties")
-    val additionalArgs = listOf(
-            "-generated", generatedDir.path,
-            "-natives", nativesDir.path,
-            "-flavor", flavor
-    )
     val cstubsName ="cstubs"
     val libraries = arguments.library
     val repos = arguments.repo
@@ -41,11 +41,11 @@ fun invokeInterop(flavor: String, args: Array<String>): Array<String>? {
         else (arguments as JSInteropArguments).target
     val target = PlatformManager().targetManager(targetRequest).target
 
-    val cinteropArgsToCompiler = interop(flavor, args + additionalArgs,
-            listOfNotNull(
-                    "manifest" to manifest.path,
-                    ("cstubsName" to cstubsName).takeIf { flavor == "native" }
-            ).toMap()
+    val cinteropArgsToCompiler = interop(flavor, args,
+            InternalInteropOptions(generatedDir.absolutePath,
+                    nativesDir.absolutePath,manifest.path,
+                    cstubsName.takeIf { flavor == "native" }
+            )
     ) ?: return null // There is no need in compiler invocation if we're generating only metadata.
 
     val nativeStubs =
@@ -67,7 +67,11 @@ fun invokeInterop(flavor: String, args: Array<String>): Array<String>? {
         repos.flatMap { listOf("-repo", it) } +
         (if (noDefaultLibs) arrayOf("-$NODEFAULTLIBS") else emptyArray()) +
         (if (noEndorsedLibs) arrayOf("-$NOENDORSEDLIBS") else emptyArray()) +
-        (if (purgeUserLibs) arrayOf("-$PURGE_USER_LIBS") else emptyArray())
+        (if (purgeUserLibs) arrayOf("-$PURGE_USER_LIBS") else emptyArray()) +
+        (if (nopack) arrayOf("-$NOPACK") else emptyArray()) +
+        moduleName?.let { arrayOf("-module-name", it) }.orEmpty() +
+        shortModuleName?.let { arrayOf("$SHORT_MODULE_NAME_ARG=$it") }.orEmpty() +
+        arguments.kotlincOption
 }
 
 

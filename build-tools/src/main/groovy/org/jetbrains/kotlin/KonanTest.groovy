@@ -332,7 +332,7 @@ class RunExternalTestGroup extends OldKonanTest {
         def experimentalSettings = findLinesWithPrefixesRemoved(text, "// !USE_EXPERIMENTAL: ")
         if (experimentalSettings.size() != 0) {
             experimentalSettings.forEach { line ->
-                line.split(" ").toList().forEach { flags.add("-Xuse-experimental=$it") }
+                line.split(" ").toList().forEach { flags.add("-Xopt-in=$it") }
             }
         }
     }
@@ -370,11 +370,12 @@ class RunExternalTestGroup extends OldKonanTest {
 
         def packagePattern = ~/(?m)^\s*package\s+(${fullQualified}*)/
         def boxPattern = ~/(?m)fun\s+box\s*\(\s*\)/
-        def classPattern = ~/.*(class|object|enum)\s+(${identifier}*).*/
+        def classPattern = ~/.*(class|object|enum|interface)\s+(${identifier}*).*/
 
         def sourceName = "_" + normalize(project.file(source).name)
         def packages = new LinkedHashSet<String>()
         def imports = []
+        def classes = []
 
         def result = super.buildCompileList()
         for (String filePath : result) {
@@ -416,8 +417,8 @@ class RunExternalTestGroup extends OldKonanTest {
                         int dotIdx = indexOf('.')
                         dotIdx > 0 ? substring(0, dotIdx) : it
                     }
-                    if (packages.contains(subImport)) {
-                        // add only to those who import packages from the test files
+                    if (packages.contains(subImport) || classes.contains(subImport)) {
+                        // add only to those who import packages or import classes from the test files
                         text = text.replaceFirst(~/${importRegex}${Pattern.quote(importStatement)}/,
                                 "import $sourceName.$importStatement")
                     } else if (text =~ classPattern) {
@@ -425,6 +426,7 @@ class RunExternalTestGroup extends OldKonanTest {
                         def clsMatcher = (text =~ classPattern)
                         for (int j = 0; j < clsMatcher.count; j++) {
                             def cl = (text =~ classPattern)[j][2]
+                            classes.add(cl)
                             if (subImport == cl) {
                                 text = text.replaceFirst(~/${importRegex}${Pattern.quote(importStatement)}/,
                                         "import $sourceName.$importStatement")
@@ -515,7 +517,6 @@ fun runTest() {
     }
 
     static def excludeList = [
-            "build/external/compiler/codegen/boxInline/anonymousObject/kt8133.kt"  // KT-34066
     ]
 
     boolean isEnabledForNativeBackend(String fileName) {
@@ -529,7 +530,6 @@ fun runTest() {
         if (!languageSettings.empty) {
             def settings = languageSettings.first()
             if (settings.contains('-ProperIeee754Comparisons') ||  // K/N supports only proper IEEE754 comparisons
-                    settings.contains('+NewInference') ||          // New inference is not implemented
                     settings.contains('-ReleaseCoroutines') ||     // only release coroutines
                     settings.contains('-DataClassInheritance')) {  // old behavior is not supported
                 return false
@@ -537,8 +537,13 @@ fun runTest() {
         }
 
         def version = findLinesWithPrefixesRemoved(text, '// LANGUAGE_VERSION: ')
-        if (version.size() != 0 && !version.contains("1.3")) {
+        if (version.size() != 0 && (!version.contains("1.3") || !version.contains("1.4"))) {
             // Support tests for 1.3 and exclude 1.2
+            return false
+        }
+
+        def apiVersion = findLinesWithPrefixesRemoved(text, '// !API_VERSION: ')
+        if (apiVersion.size() != 0 && !apiVersion.contains("1.4")) {
             return false
         }
 

@@ -44,6 +44,7 @@ import java.lang.System.out
 import kotlin.LazyThreadSafetyMode.PUBLICATION
 import kotlin.reflect.KProperty
 import org.jetbrains.kotlin.backend.common.ir.copyTo
+import org.jetbrains.kotlin.backend.common.ir.copyToWithoutSuperTypes
 import org.jetbrains.kotlin.backend.konan.objcexport.ObjCExport
 import org.jetbrains.kotlin.backend.konan.llvm.coverage.CoverageManager
 import org.jetbrains.kotlin.ir.descriptors.WrappedSimpleFunctionDescriptor
@@ -58,7 +59,7 @@ import org.jetbrains.kotlin.library.SerializedIrModule
  * Offset for synthetic elements created by lowerings and not attributable to other places in the source code.
  */
 
-internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler by KonanManglerForBE {
+internal class SpecialDeclarationsFactory(val context: Context) {
     private val enumSpecialDeclarationsFactory by lazy { EnumSpecialDeclarationsFactory(context) }
     private val outerThisFields = mutableMapOf<ClassDescriptor, IrField>()
     private val bridgesDescriptors = mutableMapOf<Pair<IrSimpleFunction, BridgeDirections>, IrSimpleFunction>()
@@ -145,7 +146,8 @@ internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler 
                 isFakeOverride = false,
                 isOperator = false
         ).apply {
-            descriptor.bind(this)
+            val bridge = this
+            descriptor.bind(bridge)
             parent = function.parent
 
             val dispatchReceiver = when (bridgeDirections.array[1]) {
@@ -168,25 +170,12 @@ internal class SpecialDeclarationsFactory(val context: Context) : KotlinMangler 
                 }
             }
 
-            dispatchReceiverParameter = dispatchReceiver?.copyTo(this)
-            extensionReceiverParameter = extensionReceiver?.copyTo(this)
-            function.valueParameters.mapTo(valueParameters) { it.copyTo(this, type = valueParameterTypes[it.index]) }
+            dispatchReceiverParameter = dispatchReceiver?.copyTo(bridge)
+            extensionReceiverParameter = extensionReceiver?.copyTo(bridge)
+            valueParameters += function.valueParameters.map { it.copyTo(bridge, type = valueParameterTypes[it.index]) }
 
-            function.typeParameters.mapIndexedTo(typeParameters) { index, parameter ->
-                WrappedTypeParameterDescriptor().let {
-                    IrTypeParameterImpl(
-                            startOffset, endOffset,
-                            origin,
-                            IrTypeParameterSymbolImpl(it),
-                            parameter.name,
-                            index,
-                            parameter.isReified,
-                            parameter.variance
-                    ).apply {
-                        it.bind(this)
-                        superTypes += parameter.superTypes
-                    }
-                }
+            typeParameters += function.typeParameters.map { parameter ->
+                parameter.copyToWithoutSuperTypes(bridge).also { it.superTypes += parameter.superTypes }
             }
         }
     }

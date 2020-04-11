@@ -13,12 +13,12 @@ import org.jetbrains.kotlin.backend.common.phaser.namedUnitPhase
 import org.jetbrains.kotlin.backend.konan.*
 import org.jetbrains.kotlin.backend.konan.descriptors.GlobalHierarchyAnalysis
 import org.jetbrains.kotlin.backend.konan.optimizations.*
-import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.visitors.*
+import org.jetbrains.kotlin.konan.file.File
 import org.jetbrains.kotlin.util.OperatorNameConventions
 
 internal val contextLLVMSetupPhase = makeKonanModuleOpPhase(
@@ -34,6 +34,19 @@ internal val contextLLVMSetupPhase = makeKonanModuleOpPhase(
             val llvmModule = LLVMModuleCreateWithNameInContext("out", llvmContext)!!
             context.llvmModule = llvmModule
             context.debugInfo.builder = LLVMCreateDIBuilder(llvmModule)
+
+            // we don't split path to filename and directory to provide enough level uniquely for dsymutil to avoid symbol
+            // clashing, which happens on linking with libraries produced from intercepting sources.
+            context.debugInfo.compilationUnit = if (context.shouldContainLocationDebugInfo()) DICreateCompilationUnit(
+                    builder = context.debugInfo.builder,
+                    lang = DWARF.language(context.config),
+                    File = File(context.config.outputFile).absolutePath,
+                    dir = "-",
+                    producer = DWARF.producer,
+                    isOptimized = 0,
+                    flags = "",
+                    rv = DWARF.runtimeVersion(context.config)) as DIScopeOpaqueRef?
+            else null
         }
 )
 
@@ -61,7 +74,11 @@ internal val disposeLLVMPhase = namedUnitPhase(
 internal val RTTIPhase = makeKonanModuleOpPhase(
         name = "RTTI",
         description = "RTTI generation",
-        op = { context, irModule -> irModule.acceptVoid(RTTIGeneratorVisitor(context)) }
+        op = { context, irModule ->
+            val visitor = RTTIGeneratorVisitor(context)
+            irModule.acceptVoid(visitor)
+            visitor.dispose()
+        }
 )
 
 internal val generateDebugInfoHeaderPhase = makeKonanModuleOpPhase(
@@ -156,14 +173,6 @@ internal val dcePhase = makeKonanModuleOpPhase(
                     if (declaration.parentAsClass.name.asString() == InteropFqNames.nativePointedName && declaration.isPrimary)
                         referencedFunctions.add(declaration)
                     super.visitConstructor(declaration)
-                }
-
-                override fun visitClass(declaration: IrClass) {
-                    context.getLayoutBuilder(declaration).associatedObjects.values.forEach {
-                        assert (it.kind == ClassKind.OBJECT) { "An object expected but was ${it.dump()}" }
-                        referencedFunctions.add(it.constructors.single())
-                    }
-                    super.visitClass(declaration)
                 }
             })
 

@@ -5,6 +5,7 @@
 
 import kotlinx.cinterop.*
 import objcSmoke.*
+import kotlin.native.concurrent.*
 import kotlin.native.ref.*
 import kotlin.test.*
 
@@ -31,6 +32,11 @@ fun run() {
     testExportObjCClass()
     testCustomString()
     testLocalizedStrings()
+    testConstructorReturnsNull()
+    testCallableReferences()
+    testMangling()
+    testSharing()
+    testObjCWeakRef()
 
     assertEquals(2, ForwardDeclaredEnum.TWO.value)
 
@@ -100,6 +106,7 @@ fun run() {
         override fun description() = "global object"
     }
     println(globalObject)
+    globalObject = null // Prevent Kotlin object above from leaking.
 
     println(formatStringLength("%d %d", 42, 17))
 
@@ -479,6 +486,133 @@ fun testLocalizedStrings() {
     val localizedString = NSBundle.mainBundle.localizedStringForKey(key, value = "", table = "Localizable")
     val string = NSString.localizedStringWithFormat(localizedString, 5)
     assertEquals("Plural: 5 apples", string)
+}
+
+fun testConstructorReturnsNull() {
+    assertFailsWith<NullPointerException>() {
+        TestConstructorReturnsNull()
+    }
+}
+
+fun testCallableReferences() {
+    val createTestCallableReferences = ::TestCallableReferences
+    assertEquals("<init>", createTestCallableReferences.name)
+    val testCallableReferences: Any = createTestCallableReferences()
+    assertTrue(testCallableReferences is TestCallableReferences)
+
+    val valueRef: kotlin.reflect.KMutableProperty0<Int> = testCallableReferences::value
+    assertEquals("value", valueRef.name)
+    assertEquals(0, valueRef())
+    valueRef.set(42)
+    assertEquals(42, valueRef())
+
+    val classMethodRef = (TestCallableReferences)::classMethod
+    assertEquals("classMethod", classMethodRef.name)
+    assertEquals(3, classMethodRef(1, 2))
+
+    val instanceMethodRef = TestCallableReferences::instanceMethod
+    assertEquals("instanceMethod", instanceMethodRef.name)
+    assertEquals(42, instanceMethodRef(testCallableReferences))
+
+    val boundInstanceMethodRef = testCallableReferences::instanceMethod
+    assertEquals("instanceMethod", boundInstanceMethodRef.name)
+    assertEquals(42, boundInstanceMethodRef())
+}
+
+fun testMangling() {
+    assertEquals(11, myStruct.`Companion$`)
+    assertEquals(12, myStruct._Companion)
+    assertEquals(13, myStruct.`$_Companion`)
+    assertEquals(14, myStruct.`super`)
+
+    val objc = FooMangled()
+    objc.`Companion$` = 99
+    assertEquals(99, objc.Companion())
+    assertEquals(99, objc.`Companion$`)
+
+    enumMangledStruct.smth = Companion
+    assertEquals(Companion, enumMangledStruct.smth)
+}
+
+private class NSObjectImpl : NSObject() {
+    var x = 111
+}
+
+fun testSharing() = withWorker {
+    val obj = NSObjectImpl()
+    val array = nsArrayOf(obj)
+
+    assertFalse(obj.isFrozen)
+
+    runInWorker {
+        assertFailsWith<IncorrectDereferenceException> {
+            array.objectAtIndex(0)
+        }
+    }
+
+    obj.x = 222
+    obj.freeze()
+    assertTrue(obj.isFrozen)
+
+    runInWorker {
+        val obj1 = array.objectAtIndex(0) as NSObjectImpl
+        assertFailsWith<InvalidMutabilityException> {
+            obj1.x = 333
+        }
+    }
+
+    assertEquals(222, obj.x)
+
+    // TODO: test [obj release] etc.
+}
+
+fun testObjCWeakRef() {
+    val deallocListener = DeallocListener()
+    assertFalse(deallocListener.deallocated)
+
+    testObjCWeakRef0(deallocListener)
+
+    kotlin.native.internal.GC.collect()
+    assertTrue(deallocListener.deallocated)
+    assertTrue(deallocListener.deallocExecutorIsNil())
+}
+
+fun testObjCWeakRef0(deallocListener: DeallocListener) = withWorker {
+    assertTrue(deallocListener.deallocExecutorIsNil())
+
+    val obj = object : DeallocExecutor() {}
+    deallocListener.deallocExecutor = obj
+    obj.deallocListener = deallocListener
+
+    assertFalse(deallocListener.deallocExecutorIsNil())
+
+//    TODO: can't actually test, Obj-C runtime doesn't expect _tryRetain throwing an exception.
+//    runInWorker {
+//        assertFailsWith<IncorrectDereferenceException> {
+//            deallocListener.deallocExecutorIsNil()
+//        }
+//    }
+
+    obj.freeze()
+
+    runInWorker {
+        // [deallocListener.deallocExecutorIsNil()] calls deallocExecutor getter, which retains [obj] and either
+        // puts it to autoreleasepool or releases it immediately (Obj-C ARC optimization).
+        // Wrap the call to autoreleasepool to ensure [obj] will be released:
+        autoreleasepool {
+            assertFalse(deallocListener.deallocExecutorIsNil())
+        }
+        // Process release of Kotlin reference to [obj] in any case:
+        kotlin.native.internal.GC.collect()
+    }
+}
+
+private fun Worker.runInWorker(block: () -> Unit) {
+    block.freeze()
+    val future = this.execute(TransferMode.SAFE, { block }) {
+        it()
+    }
+    future.result // Throws on failure.
 }
 
 private val Any.objCClassName: String

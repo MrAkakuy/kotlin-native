@@ -20,20 +20,21 @@ import org.jetbrains.kotlin.library.KotlinLibraryVersioning
 import org.jetbrains.kotlin.library.KotlinAbiVersion
 import org.jetbrains.kotlin.library.KotlinLibrary
 import org.jetbrains.kotlin.library.SerializedMetadata
+import org.jetbrains.kotlin.library.impl.BuiltInsPlatform
 import org.jetbrains.kotlin.util.removeSuffixIfPresent
 import java.util.*
 
-data class LibraryCreationArguments(
-        val metadata: KlibModuleMetadata,
-        val outputPath: String,
-        val moduleName: String,
-        val nativeBitcodePath: String,
-        val target: KonanTarget,
-        val manifest: Properties,
-        val dependencies: List<KotlinLibrary>
-)
-
-fun createInteropLibrary(arguments: LibraryCreationArguments) {
+fun createInteropLibrary(
+        metadata: KlibModuleMetadata,
+        outputPath: String,
+        moduleName: String,
+        nativeBitcodeFiles: List<String>,
+        target: KonanTarget,
+        manifest: Properties,
+        dependencies: List<KotlinLibrary>,
+        nopack: Boolean,
+        shortName: String?
+) {
     val version = KotlinLibraryVersioning(
             libraryVersion = null,
             abiVersion = KotlinAbiVersion.CURRENT,
@@ -41,18 +42,22 @@ fun createInteropLibrary(arguments: LibraryCreationArguments) {
             metadataVersion = KlibMetadataVersion.INSTANCE.toString(),
             irVersion = KlibIrVersion.INSTANCE.toString()
     )
-    val outputPathWithoutExtension = arguments.outputPath.removeSuffixIfPresent(".klib")
+    val outputPathWithoutExtension = outputPath.removeSuffixIfPresent(".klib")
     KonanLibraryWriterImpl(
             File(outputPathWithoutExtension),
-            arguments.moduleName,
+            moduleName,
             version,
-            arguments.target
+            target,
+
+            BuiltInsPlatform.NATIVE,
+            nopack = nopack,
+            shortName = shortName
     ).apply {
-        val metadata = arguments.metadata.write(ChunkingWriteStrategy())
+        val metadata = metadata.write(ChunkingWriteStrategy())
         addMetadata(SerializedMetadata(metadata.header, metadata.fragments, metadata.fragmentNames))
-        addNativeBitcode(arguments.nativeBitcodePath)
-        addManifestAddend(arguments.manifest)
-        addLinkDependencies(arguments.dependencies)
+        nativeBitcodeFiles.forEach(this::addNativeBitcode)
+        addManifestAddend(manifest)
+        addLinkDependencies(dependencies)
         commit()
     }
 }
@@ -88,6 +93,14 @@ class ChunkingWriteStrategy(
                         }
                     }
                 }
-        return classFragments + packageFragments
+        val result = classFragments + packageFragments
+        return if (result.isEmpty()) {
+            // We still need to emit empty packages because they may
+            // represent parts of package declaration (e.g. platform.[]).
+            // Tooling (e.g. `klib contents`) expects this kind of behavior.
+            parts
+        } else {
+            result
+        }
     }
 }

@@ -70,6 +70,7 @@ open class BenchmarkExtension @Inject constructor(val project: Project) {
     var linkerOpts: Collection<String> = emptyList()
     var compilerOpts: List<String> = emptyList()
     var buildType: NativeBuildType = NativeBuildType.RELEASE
+    var repeatingType: BenchmarkRepeatingType = BenchmarkRepeatingType.INTERNAL
 
     val dependencies: BenchmarkDependencies = BenchmarkDependencies()
 
@@ -183,11 +184,11 @@ abstract class BenchmarkingPlugin: Plugin<Project> {
             description = "Runs the benchmark for Kotlin/Native."
         }
         afterEvaluate {
-            (konanRun as RunKotlinNativeTask).args(
-                    "-w", nativeWarmup.toString(),
-                    "-r", attempts.toString(),
-                    "-p", "${benchmark.applicationName}::"
-            )
+            val task = konanRun as RunKotlinNativeTask
+            task.args("-p", "${benchmark.applicationName}::")
+            task.warmupCount = nativeWarmup
+            task.repeatCount = attempts
+            task.repeatingType = benchmark.repeatingType
         }
         return konanRun
     }
@@ -219,8 +220,8 @@ abstract class BenchmarkingPlugin: Plugin<Project> {
             it.doLast {
                 val applicationName = benchmark.applicationName
                 val benchContents = buildDir.resolve(nativeBenchResults).readText()
-                val nativeCompileTime = if (benchmark.compileTasks.isEmpty()) getNativeCompileTime(applicationName)
-                else getNativeCompileTime(applicationName, benchmark.compileTasks)
+                val nativeCompileTime = if (benchmark.compileTasks.isEmpty()) getNativeCompileTime(project, applicationName)
+                else getNativeCompileTime(project, applicationName, benchmark.compileTasks)
 
                 val properties = commonBenchmarkProperties + mapOf(
                         "type" to "native",

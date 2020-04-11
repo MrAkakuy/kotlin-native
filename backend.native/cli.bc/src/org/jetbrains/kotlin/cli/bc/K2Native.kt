@@ -123,8 +123,8 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                         arguments.libraries.toNonNullList())
                 put(LINKER_ARGS, arguments.linkerArguments.toNonNullList() +
                         arguments.singleLinkerArguments.toNonNullList())
-                arguments.moduleName ?. let{ put(MODULE_NAME, it) }
-                arguments.target ?.let{ put(TARGET, it) }
+                arguments.moduleName?.let{ put(MODULE_NAME, it) }
+                arguments.target?.let{ put(TARGET, it) }
 
                 put(INCLUDED_BINARY_FILES,
                         arguments.includeBinaries.toNonNullList())
@@ -152,7 +152,21 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(LIST_TARGETS, arguments.listTargets)
                 put(OPTIMIZATION, arguments.optimization)
                 put(DEBUG, arguments.debug)
-                put(LIGHT_DEBUG, arguments.lightDebug)
+                // TODO: remove after 1.4 release.
+                if (arguments.lightDebugDeprecated) {
+                    configuration.report(WARNING,
+                            "-Xg0 is now deprecated and skipped by compiler. Light debug information is enabled by default for Darwin platforms." +
+                                    " For other targets, please, use `-Xadd-light-debug=enable` instead.")
+                }
+                putIfNotNull(LIGHT_DEBUG, when (val it = arguments.lightDebugString) {
+                    "enable" -> true
+                    "disable" -> false
+                    null -> null
+                    else -> {
+                        configuration.report(ERROR, "Unsupported -Xadd-light-debug= value: $it. Possible values are 'enable'/'disable'")
+                        null
+                    }
+                })
                 put(STATIC_FRAMEWORK, selectFrameworkType(configuration, arguments, outputKind))
                 put(OVERRIDE_CLANG_OPTIONS, arguments.clangOptions.toNonNullList())
                 put(ALLOCATION_MODE, arguments.allocator)
@@ -218,7 +232,7 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 put(COVERAGE, arguments.coverage)
                 put(LIBRARIES_TO_COVER, arguments.coveredLibraries.toNonNullList())
                 arguments.coverageFile?.let { put(PROFRAW_PATH, it) }
-                put(OBJC_GENERICS, arguments.objcGenerics)
+                put(OBJC_GENERICS, !arguments.noObjcGenerics)
 
                 put(LIBRARIES_TO_CACHE, parseLibrariesToCache(arguments, configuration, outputKind))
                 val libraryToAddToCache = parseLibraryToAddToCache(arguments, configuration, outputKind)
@@ -228,6 +242,10 @@ class K2Native : CLICompiler<K2NativeCompilerArguments>() {
                 libraryToAddToCache?.let { put(LIBRARY_TO_ADD_TO_CACHE, it) }
                 put(CACHE_DIRECTORIES, cacheDirectories)
                 put(CACHED_LIBRARIES, parseCachedLibraries(arguments, configuration))
+
+                parseShortModuleName(arguments, configuration, outputKind)?.let {
+                    put(SHORT_MODULE_NAME, it)
+                }
             }
         }
     }
@@ -367,6 +385,26 @@ private fun parseLibraryToAddToCache(
 
     return if (input != null && !outputKind.isCache) {
         configuration.report(ERROR, "$ADD_CACHE can't be used when not producing cache")
+        null
+    } else {
+        input
+    }
+}
+
+// TODO: Support short names for current module in ObjC export and lift this limitation.
+private fun parseShortModuleName(
+        arguments: K2NativeCompilerArguments,
+        configuration: CompilerConfiguration,
+        outputKind: CompilerOutputKind
+): String? {
+    val input = arguments.shortModuleName
+
+    return if (input != null && outputKind != CompilerOutputKind.LIBRARY) {
+        configuration.report(
+                STRONG_WARNING,
+                "$SHORT_MODULE_NAME_ARG is only supported when producing a Kotlin library, " +
+                    "but the compiler is producing ${outputKind.name.toLowerCase()}"
+        )
         null
     } else {
         input

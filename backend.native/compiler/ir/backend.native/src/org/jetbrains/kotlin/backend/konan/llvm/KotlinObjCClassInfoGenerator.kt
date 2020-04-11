@@ -27,7 +27,7 @@ internal class KotlinObjCClassInfoGenerator(override val context: Context) : Con
 
         val instanceMethods = generateInstanceMethodDescs(irClass)
 
-        val companionObject = irClass.declarations.filterIsInstance<IrClass>().atMostOne { it.isCompanion  }
+        val companionObject = irClass.companionObject()
         val classMethods = companionObject?.generateMethodDescs().orEmpty()
 
         val superclassName = irClass.getSuperClassNotAny()!!.let {
@@ -38,9 +38,6 @@ internal class KotlinObjCClassInfoGenerator(override val context: Context) : Con
             context.llvm.imports.add(it.llvmSymbolOrigin)
             it.name.asString().removeSuffix("Protocol")
         }
-
-        val bodySize =
-                LLVMStoreSizeOfType(llvmTargetData, context.llvmDeclarations.forClass(irClass).bodyType).toInt()
 
         val exportedClassName = selectExportedClassName(irClass)
         val className = exportedClassName ?: selectInternalClassName(irClass)
@@ -60,18 +57,19 @@ internal class KotlinObjCClassInfoGenerator(override val context: Context) : Con
                 staticData.placeGlobalConstArray("", runtime.objCMethodDescription, classMethods),
                 Int32(classMethods.size),
 
-                Int32(bodySize),
                 objCLLvmDeclarations.bodyOffsetGlobal.pointer,
 
                 irClass.typeInfoPtr,
                 companionObject?.typeInfoPtr ?: NullPointer(runtime.typeInfoType),
 
-                objCLLvmDeclarations.classPointerGlobal.pointer
+                staticData.placeGlobal(
+                        "kobjcclassptr:${irClass.fqNameForIrSerialization}#internal",
+                        NullPointer(int8Type)
+                ).pointer
         )
 
         objCLLvmDeclarations.classInfoGlobal.setInitializer(info)
 
-        objCLLvmDeclarations.classPointerGlobal.setInitializer(NullPointer(int8Type))
         objCLLvmDeclarations.bodyOffsetGlobal.setInitializer(Int32(0))
     }
 
@@ -132,4 +130,21 @@ internal class KotlinObjCClassInfoGenerator(override val context: Context) : Con
                         it.llvmFunction
                 )
             }
+
+    companion object {
+        const val createdClassFieldIndex = 11
+    }
+}
+
+internal fun CodeGenerator.kotlinObjCClassInfo(irClass: IrClass): LLVMValueRef {
+    require(irClass.isKotlinObjCClass())
+    return if (isExternal(irClass)) {
+        importGlobal(
+                irClass.kotlinObjCClassInfoSymbolName,
+                runtime.kotlinObjCClassInfo,
+                origin = irClass.llvmSymbolOrigin
+        )
+    } else {
+        context.llvmDeclarations.forClass(irClass).objCDeclarations!!.classInfoGlobal.llvmGlobal
+    }
 }
