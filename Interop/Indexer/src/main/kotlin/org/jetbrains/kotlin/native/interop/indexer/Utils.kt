@@ -352,7 +352,11 @@ fun List<List<String>>.mapFragmentIsCompilable(originalLibrary: CompilationWithP
                 val errorLineNumbers = translationUnit.getErrorLineNumbers().toSet()
 
                 translationUnit.getCompileErrors().forEach {
-                    println("Compile error: $it")
+                    val parts = it.split(": error: ")
+                    val pathAndLine = parts.first().split(':')
+                    val path = pathAndLine.dropLast(2).joinToString(":", "", ":")
+                    val line = pathAndLine.takeLast(2).joinToString(", ", "(", "):")
+                    println("w: $path $line ${parts.last()}")
                 }
 
                 // Retain only those fragments that contain compilation error locations:
