@@ -41,9 +41,12 @@ class StubIrBridgeBuilder(
 
     private val declarationMapper = builderResult.declarationMapper
 
+    private val pkgName: String
+            get() = context.configuration.pkgName + builderResult.stubs.meta.pkgName.let { if (it != "") ".$it" else "" }
+
     private val kotlinFile = object : KotlinFile(
-            context.configuration.pkgName,
-            namesToBeDeclared = builderResult.stubs.computeNamesToBeDeclared(context.configuration.pkgName)
+            pkgName,
+            namesToBeDeclared = builderResult.stubs.computeNamesToBeDeclared(pkgName)
     ) {
         override val mappingBridgeGenerator: MappingBridgeGenerator
             get() = this@StubIrBridgeBuilder.mappingBridgeGenerator
@@ -52,7 +55,7 @@ class StubIrBridgeBuilder(
     private val simpleBridgeGenerator: SimpleBridgeGenerator =
             SimpleBridgeGeneratorImpl(
                     context.platform,
-                    context.configuration.pkgName,
+                    pkgName,
                     context.jvmFileClassName,
                     context.libraryForCStubs,
                     topLevelNativeScope = object : NativeScope {

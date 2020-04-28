@@ -119,8 +119,14 @@ data class HeaderId(val value: String)
 
 data class Location(val headerId: HeaderId)
 
+data class CxxContainer(val container: CxxNamespaceDecl)
+
 interface TypeDeclaration {
     val location: Location
+}
+
+interface HasCxxContainer {
+    val cxxContainer: CxxContainer?
 }
 
 sealed class StructMember(val name: String, val type: Type) {
@@ -177,7 +183,7 @@ class EnumConstant(val name: String, val value: Long, val isExplicitlyDefined: B
 /**
  * C enum definition.
  */
-abstract class EnumDef(val spelling: String, val baseType: Type) : TypeDeclaration {
+abstract class EnumDef(val spelling: String, val baseType: Type) : TypeDeclaration, HasCxxContainer {
 
     abstract val constants: List<EnumConstant>
 }
@@ -185,7 +191,7 @@ abstract class EnumDef(val spelling: String, val baseType: Type) : TypeDeclarati
 /**
  * C++ class declaration.
  */
-abstract class CxxClassDecl(spelling: String, val isAbstract: Boolean = false) : StructDecl(spelling) {
+abstract class CxxClassDecl(spelling: String, val isAbstract: Boolean = false) : StructDecl(spelling), HasCxxContainer {
     abstract val bases: List<CxxClassDecl>
     abstract override val def: CxxClassDef?
 }
@@ -206,7 +212,9 @@ abstract class CxxClassDef(
 /**
  * C++ namespace declaration.
  */
-abstract class CxxNamespaceDecl(val spelling: String, val parent: CxxNamespaceDecl?) : TypeDeclaration
+abstract class CxxNamespaceDecl(val spelling: String) : TypeDeclaration, HasCxxContainer {
+    abstract val declarations: List<TypeDeclaration>
+}
 
 sealed class ObjCContainer {
     abstract val protocols: List<ObjCProtocol>
@@ -257,7 +265,7 @@ data class Parameter(val name: String?, val type: Type, val nsConsumed: Boolean)
  * C function declaration.
  */
 abstract class FunctionDecl(val name: String, val parameters: List<Parameter>, val returnType: Type, val binaryName: String,
-                            val isDefined: Boolean, val isVararg: Boolean) : TypeDeclaration
+                            val isDefined: Boolean, val isVararg: Boolean) : TypeDeclaration, HasCxxContainer
 
 /**
  * C++ class function declaration.
@@ -281,7 +289,8 @@ class CxxClassConstructorDecl(val parameters: List<Parameter>, val binaryName: S
  * typedef $aliased $name;
  * ```
  */
-class TypedefDef(val aliased: Type, val name: String, override val location: Location) : TypeDeclaration
+open class TypedefDef(val aliased: Type, val name: String, override val location: Location,
+                      override val cxxContainer: CxxContainer?) : TypeDeclaration, HasCxxContainer
 
 abstract class MacroDef(val name: String)
 
@@ -292,7 +301,8 @@ class StringConstantDef(name: String, type: Type, val value: String) : ConstantD
 
 class WrappedMacroDef(name: String, val type: Type) : MacroDef(name)
 
-class GlobalDecl(val name: String, val type: Type, val isConst: Boolean)
+open class GlobalDecl(val name: String, val type: Type, val isConst: Boolean,
+                      override val cxxContainer: CxxContainer?) : HasCxxContainer
 
 /**
  * C type.

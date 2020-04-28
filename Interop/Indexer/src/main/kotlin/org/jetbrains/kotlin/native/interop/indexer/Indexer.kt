@@ -34,14 +34,20 @@ private class StructDefImpl(
     override val members = mutableListOf<StructMember>()
 }
 
-private class EnumDefImpl(spelling: String, type: Type, override val location: Location) : EnumDef(spelling, type) {
+private class EnumDefImpl(
+        spelling: String,
+        type: Type,
+        override val location: Location,
+        override val cxxContainer: CxxContainer? = null
+) : EnumDef(spelling, type) {
     override val constants = mutableListOf<EnumConstant>()
 }
 
 private class FunctionDeclImpl(
         name: String, parameters: List<Parameter>, returnType: Type,
         override val location: Location,
-        binaryName: String, isDefined: Boolean, isVararg: Boolean
+        binaryName: String, isDefined: Boolean, isVararg: Boolean,
+        override val cxxContainer: CxxContainer? = null
 ) : FunctionDecl(
         name, parameters, returnType, binaryName, isDefined, isVararg
 )
@@ -50,7 +56,8 @@ private class CxxClassDeclImpl(
         spelling: String,
         override val location: Location,
         override val bases: List<CxxClassDecl>,
-        isAbstract: Boolean = false
+        isAbstract: Boolean = false,
+        override val cxxContainer: CxxContainer? = null
 ) : CxxClassDecl(
         spelling,
         isAbstract
@@ -77,14 +84,10 @@ private class CxxClassDefImpl(
 
 private class CxxNamespaceDeclImpl(
         spelling: String,
-        parent: CxxNamespaceDeclImpl?,
-        override val location: Location
-) : CxxNamespaceDecl(spelling, parent)
-
-private interface ObjCContainerImpl {
-    val protocols: MutableList<ObjCProtocol>
-    val methods: MutableList<ObjCMethod>
-    val properties: MutableList<ObjCProperty>
+        override val location: Location,
+        override val cxxContainer: CxxContainer? = null
+) : CxxNamespaceDecl(spelling) {
+    override val declarations = mutableListOf<TypeDeclaration>()
 }
 
 private class CxxClassFunctionDeclImpl(
@@ -94,7 +97,25 @@ private class CxxClassFunctionDeclImpl(
         isStatic: Boolean = false, isVirtual: Boolean = false, isPureVirtual: Boolean = false
 ) : CxxClassFunctionDecl(
         name, parameters, returnType, binaryName, isDefined, isVararg, owner, isStatic, isVirtual, isPureVirtual
-)
+) {
+    override val cxxContainer: CxxContainer? = null
+}
+
+private class GlobalDeclImpl(
+        name: String, type: Type, isConst: Boolean,
+        cxxContainer: CxxContainer? = null
+) : GlobalDecl(name, type, isConst, cxxContainer)
+
+private class TypedefDefImpl(
+        aliased: Type, name: String, location: Location,
+        cxxContainer: CxxContainer? = null
+) : TypedefDef(aliased, name, location, cxxContainer)
+
+private interface ObjCContainerImpl {
+    val protocols: MutableList<ObjCProtocol>
+    val methods: MutableList<ObjCMethod>
+    val properties: MutableList<ObjCProperty>
+}
 
 private class ObjCProtocolImpl(
         name: String,
@@ -173,13 +194,13 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
     override val structs: List<StructDecl> get() = structRegistry.included
     private val structRegistry = TypeDeclarationRegistry<StructDeclImpl>()
 
-    override val enums: List<EnumDef> get() = enumRegistry.included
+    override val enums: List<EnumDef> get() = enumRegistry.included.filter { it.cxxContainer == null }
     private val enumRegistry = TypeDeclarationRegistry<EnumDefImpl>()
 
     override val cxxNamespaces: List<CxxNamespaceDecl> get() = cxxNamespacesRegistry.included
     private val cxxNamespacesRegistry = TypeDeclarationRegistry<CxxNamespaceDeclImpl>()
 
-    override val cxxClasses: List<CxxClassDecl> get() = cxxClassesRegistry.included
+    override val cxxClasses: List<CxxClassDecl> get() = cxxClassesRegistry.included.filter { it.cxxContainer == null }
     private val cxxClassesRegistry = TypeDeclarationRegistry<CxxClassDeclImpl>()
 
     override val objCClasses: List<ObjCClass> get() = objCClassRegistry.included
@@ -191,22 +212,22 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
     override val objCCategories: Collection<ObjCCategory> get() = objCCategoryById.values
     private val objCCategoryById = mutableMapOf<DeclarationID, ObjCCategoryImpl>()
 
-    override val typedefs get() = typedefRegistry.included
-    private val typedefRegistry = TypeDeclarationRegistry<TypedefDef>()
+    override val typedefs: List<TypedefDef> get() = typedefRegistry.included.filter { it.cxxContainer == null }
+    private val typedefRegistry = TypeDeclarationRegistry<TypedefDefImpl>()
 
-    private val functionById = mutableMapOf<DeclarationID, FunctionDecl>()
+    private val functionById = mutableMapOf<DeclarationID, FunctionDeclImpl>()
     private val cxxClassFunctionsById = mutableMapOf<DeclarationID, CxxClassFunctionDecl>()
     private val cxxClassConstructorsById = mutableMapOf<DeclarationID, CxxClassConstructorDecl>()
 
-    override val functions: Collection<FunctionDecl> get() = functionById.values
+    override val functions: Collection<FunctionDecl> get() = functionById.values.filter { it.cxxContainer == null }
 
     override val macroConstants = mutableListOf<ConstantDef>()
     override val wrappedMacros = mutableListOf<WrappedMacroDef>()
 
-    private val globalById = mutableMapOf<DeclarationID, GlobalDecl>()
+    private val globalById = mutableMapOf<DeclarationID, GlobalDeclImpl>()
 
     override val globals: Collection<GlobalDecl>
-        get() = globalById.values
+        get() = globalById.values.filter { it.cxxContainer == null }
 
     override lateinit var includedHeaders: List<HeaderId>
 
@@ -311,11 +332,11 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
-    private fun getEnumDefAt(cursor: CValue<CXCursor>): EnumDefImpl {
+    private fun getEnumDefAt(cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null): EnumDefImpl {
         if (clang_isCursorDefinition(cursor) == 0) {
             val definitionCursor = clang_getCursorDefinition(cursor)
             if (clang_isCursorDefinition(definitionCursor) != 0) {
-                return getEnumDefAt(definitionCursor)
+                return getEnumDefAt(definitionCursor, info)
             } else {
                 TODO("support enum forward declarations: " +
                         clang_getTypeSpelling(clang_getCursorType(cursor)).convertAndDispose())
@@ -328,7 +349,14 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
             val baseType = convertType(clang_getEnumDeclIntegerType(cursor))
 
-            val enumDef = EnumDefImpl(typeSpelling, baseType, getLocation(cursor))
+            val parent = with (info?.semanticContainer?.pointed?.cursor) {
+                if (this?.kind == CXCursorKind.CXCursor_Namespace)
+                    getCxxNamespace(this.readValue())
+                else
+                    null
+            }
+
+            val enumDef = EnumDefImpl(typeSpelling, baseType, getLocation(cursor), parent?.let(::CxxContainer))
 
             visitChildren(cursor) { childCursor, _ ->
                 if (clang_getCursorKind(childCursor) == CXCursorKind.CXCursor_EnumConstantDecl) {
@@ -342,6 +370,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
                 CXChildVisitResult.CXChildVisit_Continue
             }
 
+            parent?.declarations?.add(enumDef)
             enumDef
         }
     }
@@ -382,7 +411,16 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         else
             false
 
-        return CxxClassDeclImpl(typeSpelling, getLocation(cursor), bases, isAbstract)
+        val parent = with (info?.semanticContainer?.pointed?.cursor) {
+            if (this?.kind == CXCursorKind.CXCursor_Namespace)
+                getCxxNamespace(this.readValue())
+            else
+                null
+        }
+
+        val decl = CxxClassDeclImpl(typeSpelling, getLocation(cursor), bases, isAbstract, parent?.let(::CxxContainer))
+        parent?.declarations?.add(decl)
+        return decl
     }
 
     private fun createCxxClassDef(classDecl: CxxClassDeclImpl, cursor: CValue<CXCursor>) {
@@ -548,7 +586,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
-    fun getTypedef(type: CValue<CXType>): Type {
+    fun getTypedef(type: CValue<CXType>, info: CXIdxDeclInfo? = null): Type {
         val declCursor = clang_getTypeDeclaration(type)
         val name = getCursorSpelling(declCursor)
 
@@ -589,8 +627,16 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
 
         val typedefDef = typedefRegistry.getOrPut(declCursor) {
+            val parent = with (info?.semanticContainer?.pointed?.cursor) {
+                if (this?.kind == CXCursorKind.CXCursor_Namespace)
+                    getCxxNamespace(this.readValue())
+                else
+                    null
+            }
 
-            TypedefDef(underlying, name, getLocation(declCursor))
+            val decl = TypedefDefImpl(underlying, name, getLocation(declCursor), parent?.let(::CxxContainer))
+            parent?.declarations?.add(decl)
+            decl
         }
 
         return Typedef(typedefDef)
@@ -1025,51 +1071,44 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
 
             CXIdxEntity_Typedef -> {
                 val type = clang_getCursorType(cursor)
-                getTypedef(type)
+                getTypedef(type, info)
             }
 
             CXIdxEntity_Function -> {
                 if (isSuitableFunction(cursor)) {
                     functionById.getOrPut(getDeclarationId(cursor)) {
-                        getFunction(cursor)
+                        getFunction(cursor, info)
                     }
                 }
             }
 
             CXIdxEntity_Enum -> {
-                getEnumDefAt(cursor)
+                getEnumDefAt(cursor, info)
             }
 
-            CXIdxEntity_Variable -> {
-                if (info.semanticContainer!!.pointed.cursor.kind == CXCursorKind.CXCursor_TranslationUnit) {
-                    // Top-level variable.
-                    globalById.getOrPut(getDeclarationId(cursor)) {
-                        GlobalDecl(
-                                name = entityName!!,
-                                type = convertCursorType(cursor),
-                                isConst = clang_isConstQualifiedType(clang_getCursorType(cursor)) != 0
-                        )
+            CXIdxEntity_Variable -> with (info.semanticContainer!!.pointed.cursor) {
+                when (this.kind) {
+                    CXCursorKind.CXCursor_TranslationUnit -> {
+                        // Top-level variable.
+                        globalById.getOrPut(getDeclarationId(cursor)) {
+                            GlobalDeclImpl(
+                                    name = entityName!!,
+                                    type = convertCursorType(cursor),
+                                    isConst = clang_isConstQualifiedType(clang_getCursorType(cursor)) != 0
+                            )
+                        }
                     }
-                }
-                else if (info.semanticContainer!!.pointed.cursor.kind == CXCursorKind.CXCursor_Namespace) {
-                    var parentCursor = info.semanticContainer!!.pointed.cursor.readValue()
-
-                    val namespace = generateSequence {
-                        if (parentCursor.kind == CXCursorKind.CXCursor_Namespace) {
-                            val name = getCursorSpelling(parentCursor)
-                            parentCursor = clang_getCursorSemanticParent(parentCursor)
-                            name
-                        } else
-                            null
-                    }.toList().asReversed().joinToString("::")
-
-                    globalById.getOrPut(getDeclarationId(cursor)) {
-                        GlobalDecl(
-                                name = "$namespace::${entityName!!}",
-                                type = convertCursorType(cursor),
-                                isConst = clang_isConstQualifiedType(clang_getCursorType(cursor)) != 0
-                        )
+                    CXCursorKind.CXCursor_Namespace -> {
+                        globalById.getOrPut(getDeclarationId(cursor)) {
+                            GlobalDeclImpl(
+                                    name = entityName!!,
+                                    type = convertCursorType(cursor),
+                                    isConst = clang_isConstQualifiedType(clang_getCursorType(cursor)) != 0,
+                                    CxxContainer(cxxNamespacesRegistry.getOrPut(this.readValue()) { error("Outer namespace should be already processed") })
+                            )
+                        }
                     }
+                    else -> { }
                 }
             }
 
@@ -1131,7 +1170,7 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         }
     }
 
-    private fun getFunction(cursor: CValue<CXCursor>): FunctionDeclImpl {
+    private fun getFunction(cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null): FunctionDeclImpl {
         val name = clang_getCursorSpelling(cursor).convertAndDispose()
         val returnType = convertType(clang_getCursorResultType(cursor), clang_getCursorResultTypeAttributes(cursor))
 
@@ -1145,7 +1184,16 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val isDefined = (clang_Cursor_isNull(definitionCursor) == 0)
         val isVararg = clang_Cursor_isVariadic(cursor) != 0
 
-        return FunctionDeclImpl(name, parameters, returnType, getLocation(cursor), binaryName, isDefined, isVararg)
+        val parent = with (info?.semanticContainer?.pointed?.cursor) {
+            if (this?.kind == CXCursorKind.CXCursor_Namespace)
+                getCxxNamespace(this.readValue())
+            else
+                null
+        }
+
+        val decl = FunctionDeclImpl(name, parameters, returnType, getLocation(cursor), binaryName, isDefined, isVararg, parent?.let(::CxxContainer))
+        parent?.declarations?.add(decl)
+        return decl
     }
 
     private fun getCxxClassFunction(cursor: CValue<CXCursor>, owner: CxxClassDecl): CxxClassFunctionDeclImpl {
@@ -1183,9 +1231,11 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         return CxxClassConstructorDecl(parameters, binaryName, isDefined, isVararg, owner)
     }
 
-    private fun getCxxNamespace(cursor: CValue<CXCursor>, info: CXIdxDeclInfo): CxxNamespaceDeclImpl {
+    private fun getCxxNamespace(cursor: CValue<CXCursor>, info: CXIdxDeclInfo? = null): CxxNamespaceDeclImpl {
         return cxxNamespacesRegistry.getOrPut(cursor) {
-            val parent = info.semanticContainer?.pointed?.cursor
+            assert(info != null) { "Namespace should be already processed" }
+
+            val parent = info!!.semanticContainer?.pointed?.cursor
             assert(parent == null || parent.kind == CXCursorKind.CXCursor_Namespace || parent.kind == CXCursorKind.CXCursor_TranslationUnit)
 
             val parentNamespace = if (parent?.kind == CXCursorKind.CXCursor_Namespace)
@@ -1193,7 +1243,13 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
             else
                 null
 
-            CxxNamespaceDeclImpl(getCursorSpelling(cursor), parentNamespace, getLocation(cursor))
+            val spellingPrefix = parentNamespace?.spelling?.let { "$it::" } ?: ""
+
+            CxxNamespaceDeclImpl(
+                    spellingPrefix + getCursorSpelling(cursor),
+                    getLocation(cursor),
+                    parentNamespace?.let(::CxxContainer)
+            )
         }
     }
 

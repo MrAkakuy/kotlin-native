@@ -305,9 +305,10 @@ private fun processCLib(flavorName: String, cinteropArguments: CInteropArguments
 
     val stubIrContext = StubIrContext(logger, configuration, nativeIndex, imports, flavor, mode, libName)
     val stubIrOutput = run {
-        val outKtFileCreator = {
-            val outKtFileName = fqParts.last() + ".kt"
-            val outKtFileRelative = (fqParts + outKtFileName).joinToString("/")
+        val outKtFileCreator = { pkg: String ->
+            val pkgParts = pkg.split('.')
+            val outKtFileName = pkgParts.last() + ".kt"
+            val outKtFileRelative = (pkgParts + outKtFileName).joinToString("/")
             val file = File(ktGenRoot, outKtFileRelative)
             file.parentFile.mkdirs()
             file

@@ -28,6 +28,7 @@ sealed class StubContainer : StubIrElement {
  * For example, can be used for comments in textual representation.
  */
 class StubContainerMeta(
+        val pkgName: String = "",
         val textAtStart: String = "",
         val textAtEnd: String = ""
 )

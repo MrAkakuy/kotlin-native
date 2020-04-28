@@ -121,10 +121,9 @@ class StubIrContext(
     }
 
     companion object {
-        private val VALID_PACKAGE_NAME_REGEX = "[a-zA-Z0-9_.]+".toRegex()
+        val VALID_PACKAGE_NAME_REGEX = "[a-zA-Z0-9_.]+".toRegex()
     }
 }
-
 class StubIrDriver(
         private val context: StubIrContext,
         private val options: DriverOptions
@@ -133,7 +132,7 @@ class StubIrDriver(
             val entryPoint: String?,
             val moduleName: String,
             val outCFile: File,
-            val outKtFileCreator: () -> File
+            val outKtFileCreator: (String) -> File
     )
 
     sealed class Result {
@@ -143,36 +142,47 @@ class StubIrDriver(
     }
 
     fun run(): Result {
-        val (entryPoint, moduleName, outCFile, outKtFile) = options
+        val (entryPoint, moduleName, outCFile, outKtFileCreator) = options
 
         val builderResult = StubIrBuilder(context).build()
-        val bridgeBuilderResult = StubIrBridgeBuilder(context, builderResult).build()
+        val bridgeBuilderResult = builderResult.map { it to StubIrBridgeBuilder(context, it).build() }
 
         outCFile.bufferedWriter().use {
-            emitCFile(context, it, entryPoint, bridgeBuilderResult.nativeBridges)
+            emitCFile(context, it, entryPoint, bridgeBuilderResult.map { result -> result.second.nativeBridges })
         }
 
         return when (context.generationMode) {
             GenerationMode.SOURCE_CODE -> {
-                emitSourceCode(outKtFile(), builderResult, bridgeBuilderResult)
+                emitSourceCode(outKtFileCreator, bridgeBuilderResult)
             }
-            GenerationMode.METADATA -> emitMetadata(builderResult, moduleName, bridgeBuilderResult.kotlinFile)
+            GenerationMode.METADATA -> emitMetadata(moduleName, bridgeBuilderResult)
         }
     }
 
     private fun emitSourceCode(
-            outKtFile: File, builderResult: StubIrBuilderResult, bridgeBuilderResult: BridgeBuilderResult
+            outKtFileCreator: (String) -> File, builderResult: List<Pair<StubIrBuilderResult, BridgeBuilderResult>>
     ): Result.SourceCode {
-        outKtFile.bufferedWriter().use { ktFile ->
-            StubIrTextEmitter(context, builderResult, bridgeBuilderResult).emit(ktFile)
+        builderResult.forEach { (builderResult, bridgeBuilderResult) ->
+            outKtFileCreator(context.configuration.pkgName + builderResult.stubs.meta.pkgName.let { if (it != "") ".$it" else "" })
+                    .bufferedWriter()
+                    .use { ktFile ->
+                StubIrTextEmitter(context, builderResult, bridgeBuilderResult).emit(ktFile)
+            }
         }
         return Result.SourceCode
     }
 
-    private fun emitMetadata(builderResult: StubIrBuilderResult, moduleName: String, scope: KotlinScope) =
-            Result.Metadata(StubIrMetadataEmitter(context, builderResult, moduleName, scope).emit())
+    private fun emitMetadata(moduleName: String, builderResults: List<Pair<StubIrBuilderResult, BridgeBuilderResult>>): Result.Metadata {
+        val metadata = builderResults.map { (builderResult, bridgeBuilderResult) ->
+            StubIrMetadataEmitter(context, builderResult, moduleName, bridgeBuilderResult.kotlinFile).emit()
+        }.fold(KlibModuleMetadata(moduleName, emptyList(), emptyList())) { acc, module ->
+            KlibModuleMetadata(moduleName, acc.fragments + module.fragments, acc.annotations + module.annotations)
+        }
 
-    private fun emitCFile(context: StubIrContext, cFile: Appendable, entryPoint: String?, nativeBridges: NativeBridges) {
+        return Result.Metadata(metadata)
+    }
+
+    private fun emitCFile(context: StubIrContext, cFile: Appendable, entryPoint: String?, nativeBridges: List<NativeBridges>) {
         val out = { it: String -> cFile.appendln(it) }
 
         context.libraryForCStubs.preambleLines.forEach {
@@ -187,7 +197,7 @@ class StubIrDriver(
         out("#endif")
         out("")
 
-        nativeBridges.nativeLines.forEach { out(it) }
+        nativeBridges.forEach { bridge -> bridge.nativeLines.forEach { out(it) } }
 
         if (entryPoint != null) {
             out("extern int Konan_main(int argc, char** argv);")

@@ -27,7 +27,12 @@ class StubIrTextEmitter(
     private val functionalBridgeBodies = bridgeBuilderResult.functionalBridgeBodies
 
     private val pkgName: String
-        get() = context.configuration.pkgName
+        get() = context.configuration.pkgName + builderResult.stubs.meta.pkgName.let { if (it != "") ".$it" else "" }
+
+    private val validPkgName: String
+        get() = pkgName.split(".").joinToString(".") {
+            if (it.matches(StubIrContext.VALID_PACKAGE_NAME_REGEX)) it else "`$it`"
+        }
 
     private val StubContainer.isTopLevelContainer: Boolean
         get() = this == builderResult.stubs
@@ -114,7 +119,7 @@ class StubIrTextEmitter(
 
         out("@file:Suppress(${suppress.joinToString { it.quoteAsKotlinLiteral() }})")
         if (pkgName != "") {
-            out("package ${context.validPackageName}")
+            out("package $validPkgName")
             out("")
         }
         if (context.platform == KotlinPlatform.NATIVE) {

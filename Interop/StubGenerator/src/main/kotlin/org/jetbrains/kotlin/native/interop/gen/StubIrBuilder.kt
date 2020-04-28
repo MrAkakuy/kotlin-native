@@ -214,12 +214,13 @@ class StubsBuildingContextImpl(
 
         override fun getKotlinName(globalDecl: GlobalDecl): Classifier {
             val baseName = globalDecl.kotlinName
-            val pkg = pkgName // TODO: is it ok or not
+            val pkg = globalDecl.pkgName ?: pkgName
             return Classifier.topLevel(pkg, baseName)
         }
 
         override fun getPackageFor(declaration: TypeDeclaration): String {
-            return imports.getPackage(declaration.location) ?: pkgName
+            return imports.getPackage(declaration.location)
+                    ?: if (declaration is HasCxxContainer) declaration.pkgName ?: pkgName else pkgName
         }
 
         override val useUnsignedTypes: Boolean
@@ -227,6 +228,12 @@ class StubsBuildingContextImpl(
                 KotlinPlatform.JVM -> false
                 KotlinPlatform.NATIVE -> true
             }
+
+        private val HasCxxContainer.pkgName: String?
+            get() = cxxContainer?.container?.spelling
+                    ?.split("::")
+                    ?.joinToString(".")
+                    ?.let { this@StubsBuildingContextImpl.pkgName + '.' + it }
     }
 
     override val macroConstantsByName: Map<String, MacroDef> =
@@ -343,7 +350,7 @@ class StubIrBuilder(private val context: StubIrContext) {
 
     private val buildingContext = StubsBuildingContextImpl(context)
 
-    fun build(): StubIrBuilderResult {
+    fun build(): List<StubIrBuilderResult> {
         nativeIndex.objCProtocols.filter { !it.isForwardDeclaration }.forEach { generateStubsForObjCProtocol(it) }
         nativeIndex.objCClasses.filter { !it.isForwardDeclaration && !it.isNSStringSubclass()} .forEach { generateStubsForObjCClass(it) }
         nativeIndex.objCCategories.filter { !it.clazz.isNSStringSubclass() }.forEach { generateStubsForObjCCategory(it) }
@@ -365,7 +372,36 @@ class StubIrBuilder(private val context: StubIrContext) {
                 typealiases.toList(),
                 containers.toList()
         )
-        return StubIrBuilderResult(
+
+        val cxxNamespacesStubs = nativeIndex.cxxNamespaces.map {
+            classes.clear()
+            functions.clear()
+            globals.clear()
+            typealiases.clear()
+            containers.clear()
+
+            val pkgName = it.spelling.split("::").joinToString(".")
+
+            generateStubsForCxxNamespace(it)
+
+            val cxxNamespaceStubsMeta = StubContainerMeta(pkgName)
+            val cxxNamespaceStubs = SimpleStubContainer(
+                    cxxNamespaceStubsMeta,
+                    classes.toList(),
+                    functions.toList(),
+                    globals.toList(),
+                    typealiases.toList(),
+                    containers.toList()
+            )
+            StubIrBuilderResult(
+                    cxxNamespaceStubs,
+                    buildingContext.declarationMapper,
+                    buildingContext.bridgeComponentsBuilder.build(),
+                    buildingContext.wrapperComponentsBuilder.build()
+            )
+        }
+
+        return cxxNamespacesStubs + StubIrBuilderResult(
                 stubs,
                 buildingContext.declarationMapper,
                 buildingContext.bridgeComponentsBuilder.build(),
@@ -375,7 +411,7 @@ class StubIrBuilder(private val context: StubIrContext) {
 
     private fun generateStubsForWrappedMacro(macro: WrappedMacroDef) {
         try {
-            generateStubsForGlobal(GlobalDecl(macro.name, macro.type, isConst = true))
+            generateStubsForGlobal(GlobalDecl(macro.name, macro.type, isConst = true, null))
         } catch (e: Throwable) {
             context.log("Warning: cannot generate stubs for macro ${macro.name}")
         }
@@ -418,6 +454,24 @@ class StubIrBuilder(private val context: StubIrContext) {
             addStubs(CxxClassStubBuilder(buildingContext, decl).build())
         } catch (e: Throwable) {
             context.log("Warning: cannot generate definition for struct ${decl.spelling}")
+        }
+    }
+
+    private fun generateStubsForCxxNamespace(decl: CxxNamespaceDecl) {
+        try {
+            decl.declarations.forEach {
+                when (it) {
+                    is EnumDef -> generateStubsForEnum(it)
+                    is FunctionDecl -> generateStubsForFunction(it)
+                    is CxxClassDecl -> generateStubsForCxxClass(it)
+                    is GlobalDecl -> generateStubsForGlobal(it)
+                    is TypedefDef -> generateStubsForTypedef(it)
+                    is CxxNamespaceDecl -> { }
+                    else -> TODO()
+                }
+            }
+        } catch (e: Throwable) {
+            context.log("Warning: cannot generate definition for c++ namespace ${decl.spelling}")
         }
     }
 
