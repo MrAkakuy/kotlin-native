@@ -468,6 +468,34 @@ internal class CxxClassStubBuilder(
     override fun build(): List<StubIrElement> {
         val platform = context.platform
         val def = decl.def ?: return generateForwardClass(decl)
+        val classifier = context.getKotlinClassForPointed(decl)
+
+        if (decl.isInterface()) {
+            val functions: List<FunctionStub> = def.functions.flatMap {
+                FunctionStubBuilder(context, it).build()
+            }.filterIsInstance<FunctionStub>()
+            val staticFunctions: List<FunctionStub> = def.staticFunctions.flatMap {
+                FunctionStubBuilder(context, it).build()
+            }.filterIsInstance<FunctionStub>()
+
+            val superClass = if (decl.bases.isEmpty())
+                null
+            else
+                ClassifierStubType(context.getKotlinClassForPointed(decl.bases.first())).let(::SuperClassInit)
+
+            val companionClassifier = classifier.nested("Companion")
+            val companion = ClassStub.Companion(companionClassifier, staticFunctions)
+
+            return listOf(ClassStub.Simple(
+                    classifier = classifier,
+                    origin = StubOrigin.CxxClass(decl),
+                    modality = ClassStubModality.INTERFACE,
+                    methods = functions,
+                    superClassInit = superClass,
+                    companion = companion
+            ))
+        }
+
 
         val structAnnotation: AnnotationStub? = if (platform == KotlinPlatform.JVM) {
             if (def.kind == StructDef.Kind.STRUCT && def.fieldsHaveDefaultAlignment()) {
@@ -480,17 +508,8 @@ internal class CxxClassStubBuilder(
                 AnnotationStub.CStruct(it)
             }
         }
-        val classifier = context.getKotlinClassForPointed(decl)
 
-        val modality = when (context.configuration.library.language) {
-            Language.CPP -> {
-                if (decl.isAbstract)
-                    ClassStubModality.ABSTRACT
-                else
-                    ClassStubModality.OPEN
-            }
-            else -> ClassStubModality.NONE
-        }
+        val modality = if (decl.isAbstract) ClassStubModality.ABSTRACT else ClassStubModality.OPEN
 
         val fields: List<PropertyStub?> = def.fields.map { field ->
             try {
@@ -516,7 +535,7 @@ internal class CxxClassStubBuilder(
                     }
                     val kind = PropertyStub.Kind.Val(getter)
                     // TODO: Should receiver be added?
-                    PropertyStub(fieldName, type.toStubIrType(), kind, annotations = annotations, origin = origin)
+                    PropertyStub(fieldName, type.toStubIrType(), kind, annotations = annotations, origin = origin, isOverride = true)
                 } else {
                     val pointedType = fieldRefType.pointedType.toStubIrType()
                     val pointedTypeArgument = TypeArgumentStub(pointedType)
@@ -534,17 +553,17 @@ internal class CxxClassStubBuilder(
                             }
                         }
                         val kind = PropertyStub.Kind.Var(getter, setter)
-                        PropertyStub(fieldName, fieldRefType.argType.toStubIrType(), kind, origin = origin)
+                        PropertyStub(fieldName, fieldRefType.argType.toStubIrType(), kind, origin = origin, isOverride = true)
                     } else if (unwrappedFieldType is CxxClassType) {
                         val kind = PropertyStub.Kind.Val(PropertyAccessor.Getter.CxxClassMemberAt(offset, pointedType))
-                        PropertyStub(field.name, pointedType, kind, origin = origin)
+                        PropertyStub(field.name, pointedType, kind, origin = origin, isOverride = true)
                     } else {
                         val accessor = when (context.generationMode) {
                             GenerationMode.SOURCE_CODE -> PropertyAccessor.Getter.MemberAt(offset, hasValueAccessor = false)
                             GenerationMode.METADATA -> PropertyAccessor.Getter.ExternalGetter(listOf(AnnotationStub.CStruct.MemberAt(offset)))
                         }
                         val kind = PropertyStub.Kind.Val(accessor)
-                        PropertyStub(fieldName, pointedType, kind, origin = origin)
+                        PropertyStub(fieldName, pointedType, kind, origin = origin, isOverride = true)
                     }
                 }
             } catch (e: Throwable) {
@@ -572,8 +591,11 @@ internal class CxxClassStubBuilder(
                     PropertyStub.Kind.Var(readBits, writeBits)
                 }
             }
-            PropertyStub(fieldName, kotlinType.toStubIrType(), kind, origin = StubOrigin.StructMember(field))
+            PropertyStub(fieldName, kotlinType.toStubIrType(), kind, origin = StubOrigin.StructMember(field), isOverride = true)
         }
+
+        val fieldsConst = fields.mapNotNull { it?.makeAbstractVal() }
+        val bitFieldsConst = bitFields.map { it.makeAbstractVal() }
 
         val functions: List<FunctionStub> = def.functions.flatMap {
             FunctionStubBuilder(context, it).build()
@@ -648,10 +670,35 @@ internal class CxxClassStubBuilder(
         val cxxClassType = context.platform.getRuntimeType("CxxClass")
         require(cxxClassType is ClassifierStubType)
 
-        val superClass = if (decl.bases.isEmpty())
-            cxxClassType
-        else
-            ClassifierStubType(context.getKotlinClassForPointed(decl.bases.first()))
+        val constInterfaceClassifier = Classifier.topLevel(classifier.pkg, "I${classifier.topLevelName}Const")
+        val baseClass = decl.getBaseClass()
+        val implementedInterfaces = decl.getImplementedInterfaces()
+
+        val superClass = baseClass?.let {
+            ClassifierStubType(context.getKotlinClassForPointed(it))
+        } ?: cxxClassType
+        val interfaces = implementedInterfaces.map {
+            ClassifierStubType(context.getKotlinClassForPointed(it))
+        }
+        val constInterface = ClassifierStubType(constInterfaceClassifier)
+
+        val constInterfaceSuperClassClassifier = if (baseClass == null)
+            null
+        else {
+            Classifier.topLevel(superClass.classifier.pkg, "I${superClass.classifier.topLevelName}Const")
+        }
+
+        val constCaseFunction = FunctionStub(
+                name = "constCast",
+                returnType = ClassifierStubType(constInterfaceClassifier),
+                parameters = emptyList(),
+                origin = StubOrigin.Synthetic.CxxClassConstCast(decl, constInterfaceClassifier),
+                annotations = emptyList(),
+                external = false,
+                receiver = null,
+                modality = MemberStubModality.OPEN,
+                isOverride = baseClass != null
+        )
 
         val companionSuper = (context.platform.getRuntimeType("CStructVar") as ClassifierStubType).nested("Type")
         val typeSize = listOf(IntegralConstantStub(def.size, 4, true), IntegralConstantStub(def.align.toLong(), 4, true))
@@ -664,15 +711,25 @@ internal class CxxClassStubBuilder(
         )
 
         return listOf(ClassStub.Simple(
-                classifier,
+                classifier = classifier,
                 origin = StubOrigin.CxxClass(decl),
                 properties = fields.filterNotNull() + if (platform == KotlinPlatform.NATIVE) bitFields else emptyList(),
                 constructors = listOf(chainConstructor) + constructors,
-                methods = listOf(destructor) + functions,
+                methods = listOf(destructor, constCaseFunction) + functions,
                 modality = modality,
                 annotations = listOfNotNull(structAnnotation),
                 superClassInit = SuperClassInit(superClass),
+                interfaces = listOf(constInterface) + interfaces,
                 companion = companion
+        ), ClassStub.Simple(
+                classifier = constInterfaceClassifier,
+                origin = StubOrigin.CxxClass(decl),
+                properties = fieldsConst + if (platform == KotlinPlatform.NATIVE) bitFieldsConst else emptyList(),
+                methods = functions.filter { it.isCxxConstMethod() }.map { it.makeAbstract() },
+                modality = ClassStubModality.INTERFACE,
+                annotations = listOf(AnnotationStub.CxxConstInterface(classifier.fqName)),
+                interfaces = listOfNotNull(constInterfaceSuperClassClassifier?.let(::ClassifierStubType)),
+                companion = ClassStub.Companion(companionClassifier, staticFunctions)
         ))
     }
 
@@ -691,6 +748,27 @@ internal class CxxClassStubBuilder(
         }
 
         return elementLength * elementCount
+    }
+
+    private fun PropertyStub.makeAbstractVal(): PropertyStub {
+        val kind = when (this.kind) {
+            is PropertyStub.Kind.Var -> PropertyStub.Kind.Val(this.kind.getter)
+            is PropertyStub.Kind.Val,
+            is PropertyStub.Kind.Constant -> this.kind
+        }
+        val modality = MemberStubModality.ABSTRACT
+        val isOverride = (origin as StubOrigin.StructMember).member.isOverridingInClass(decl)
+        return PropertyStub(name, type, kind, modality, receiverType, annotations, origin, isOverride) // TODO: copy
+    }
+
+    private fun FunctionStub.isCxxConstMethod(): Boolean {
+        return ((this.origin as? StubOrigin.Function)?.function as? CxxClassFunctionDecl)?.isConst ?: false
+    }
+
+    private fun FunctionStub.makeAbstract(): FunctionStub {
+        val modality = MemberStubModality.ABSTRACT
+        val isOverride = ((origin as StubOrigin.Function).function as CxxClassFunctionDecl).isOverriding()
+        return FunctionStub(name, returnType, parameters, origin, annotations, external, receiver, modality, typeParameters, isOverride)
     }
 
     private tailrec fun Type.isIntegerTypeSigned(): Boolean = when (this) {
@@ -866,17 +944,12 @@ internal class FunctionStubBuilder(
             }
         } else MemberStubModality.FINAL
 
-        // TODO: context.isOverloading (CxxClass scope)
-        val isOverride = if (func is CxxClassFunctionDecl) {
-            func.owner.bases.getOrNull(0)?.findFunctionProto(func) != null
-        } else
-            false
-
+        val isOverride = if (func is CxxClassFunctionDecl) func.isConst || func.isOverriding() else false
 
         val annotations: List<AnnotationStub>
         val mustBeExternal: Boolean
 
-        if (context.platform == KotlinPlatform.JVM || modality == MemberStubModality.ABSTRACT || (func as? CxxClassFunctionDecl)?.owner != null) {
+        if (context.platform == KotlinPlatform.JVM || modality == MemberStubModality.ABSTRACT || context.configuration.library.language == Language.CPP) {
             annotations = emptyList()
             mustBeExternal = false
         } else {
@@ -899,15 +972,6 @@ internal class FunctionStubBuilder(
     }
 
     private fun FunctionDecl.returnsVoid(): Boolean = this.returnType.unwrapTypedefs() is VoidType
-
-    private fun CxxClassDecl.findFunctionProto(func: CxxClassFunctionDecl): CxxClassFunctionDecl? {
-        return def?.functions?.find {
-                it.name == func.name
-                        && it.parameters.map { it.type.unwrapTypedefs() } == func.parameters.map { it.type.unwrapTypedefs() }
-                        && it.returnType.unwrapTypedefs() == func.returnType.unwrapTypedefs()
-                        && (it.isVirtual || it.isPureVirtual)
-        } ?: bases.getOrNull(0)?.findFunctionProto(func)
-    }
 }
 
 internal class ConstructorStubBuilder(

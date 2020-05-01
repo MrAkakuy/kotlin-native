@@ -101,6 +101,7 @@ class StubIrBridgeBuilder(
                     element.modality == MemberStubModality.ABSTRACT -> { }
                     element.origin is StubOrigin.Synthetic.CxxClassReinterpretCPointer -> { }
                     element.origin is StubOrigin.Synthetic.CxxClassReinterpretNativePointed -> { }
+                    element.origin is StubOrigin.Synthetic.CxxClassConstCast -> { }
                     else -> generateBridgeBody(element)
                 }
             } catch (e: Throwable) {

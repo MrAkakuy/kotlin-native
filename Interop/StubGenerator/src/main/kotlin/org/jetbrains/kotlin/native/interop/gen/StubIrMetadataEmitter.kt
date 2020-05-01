@@ -399,6 +399,9 @@ private class MappingExtensions(
             )
             is AnnotationStub.CNaturalStruct ->
                 error("@CNaturalStruct should not be used for Kotlin/Native interop")
+            is AnnotationStub.CxxConstInterface -> mapOfNotNull(
+                    ("className" to className).asAnnotationArgument()
+            )
             is AnnotationStub.CLength -> mapOfNotNull(
                     "value" to KmAnnotationArgument.LongValue(length)
             )

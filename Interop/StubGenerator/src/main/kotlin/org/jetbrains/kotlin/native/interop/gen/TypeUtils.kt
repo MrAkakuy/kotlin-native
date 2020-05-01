@@ -24,6 +24,34 @@ val EnumDef.isAnonymous: Boolean
 val StructDecl.isAnonymous: Boolean
     get() = spelling.contains("(anonymous ") // TODO: it is a hack
 
+fun CxxClassDecl.isInterface() = def?.let {
+        if (it.fields.isNotEmpty() || it.bitFields.isNotEmpty() || it.constructors.isNotEmpty())
+            return false
+        it.functions.find { !it.isPureVirtual } == null
+    } ?: false
+
+fun CxxClassDecl.getBaseClass() = this.bases.firstOrNull { !it.isInterface() }
+
+fun CxxClassDecl.getImplementedInterfaces() = this.bases.filter { it.isInterface() }
+
+fun CxxClassDecl.findFunctionProto(func: CxxClassFunctionDecl): CxxClassFunctionDecl? {
+    return def?.functions?.find {
+        it.name == func.name
+                && it.parameters.map { it.type.unwrapTypedefs() } == func.parameters.map { it.type.unwrapTypedefs() }
+                && it.returnType.unwrapTypedefs() == func.returnType.unwrapTypedefs()
+                && (it.isVirtual || it.isPureVirtual)
+    } ?: getBaseClass()?.findFunctionProto(func) ?: getImplementedInterfaces().map { it.findFunctionProto(func) }.firstOrNull()
+}
+
+fun CxxClassFunctionDecl.isOverriding() = owner.getBaseClass()?.findFunctionProto(this) != null
+
+fun StructMember.isOverridingInClass(owner: CxxClassDecl): Boolean {
+    fun CxxClassDecl.hasMember(member: StructMember): StructMember? {
+        return def?.members?.find { it.name == member.name && it.type == member.type } ?: getBaseClass()?.hasMember(member)
+    }
+    return owner.getBaseClass()?.hasMember(this) != null
+}
+
 /**
  * Returns the expression which could be used for this type in C code.
  * Note: the resulting string doesn't exactly represent this type, but it is enough for current purposes.

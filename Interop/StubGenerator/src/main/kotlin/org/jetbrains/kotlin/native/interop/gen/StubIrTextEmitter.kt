@@ -216,6 +216,8 @@ class StubIrTextEmitter(
                     out("$header = ${element.origin.classifier.topLevelName}(ptr.reinterpret<CStructVar>().pointed)")
                 element.origin is StubOrigin.Synthetic.CxxClassReinterpretNativePointed ->
                     out("$header = ${element.origin.classifier.topLevelName}(ptd.reinterpret<CStructVar>())")
+                element.origin is StubOrigin.Synthetic.CxxClassConstCast ->
+                    out("$header = this")
                 else -> block(header) {
                     functionalBridgeBodies.getValue(element).forEach(out)
                 }
@@ -324,7 +326,9 @@ class StubIrTextEmitter(
         }
         val header = "$receiver$name: ${renderStubType(element.type)}"
 
-        if (element.kind is PropertyStub.Kind.Val && !nativeBridges.isSupported(element.kind.getter)
+        if (element.modality == MemberStubModality.ABSTRACT) {
+            out("val $header")
+        } else if (element.kind is PropertyStub.Kind.Val && !nativeBridges.isSupported(element.kind.getter)
                 || element.kind is PropertyStub.Kind.Var && !nativeBridges.isSupported(element.kind.getter)) {
             out(annotationForUnableToImport)
             out("val $header")
@@ -520,6 +524,8 @@ class StubIrTextEmitter(
             "@CStruct(${annotationStub.struct.quoteAsKotlinLiteral()})"
         is AnnotationStub.CNaturalStruct ->
             "@CNaturalStruct(${annotationStub.members.joinToString { it.name.quoteAsKotlinLiteral() }})"
+        is AnnotationStub.CxxConstInterface ->
+            "@CxxConstInterface(${annotationStub.className.quoteAsKotlinLiteral()})"
         is AnnotationStub.CLength ->
             "@CLength(${annotationStub.length})"
         is AnnotationStub.Deprecated ->

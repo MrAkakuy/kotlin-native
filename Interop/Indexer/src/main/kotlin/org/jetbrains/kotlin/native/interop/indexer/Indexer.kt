@@ -94,9 +94,9 @@ private class CxxClassFunctionDeclImpl(
         name: String, parameters: List<Parameter>, returnType: Type,
         override val location: Location,
         binaryName: String, isDefined: Boolean, isVararg: Boolean, owner: CxxClassDecl,
-        isStatic: Boolean = false, isVirtual: Boolean = false, isPureVirtual: Boolean = false
+        isStatic: Boolean = false, isVirtual: Boolean = false, isPureVirtual: Boolean = false, isConst: Boolean = false
 ) : CxxClassFunctionDecl(
-        name, parameters, returnType, binaryName, isDefined, isVararg, owner, isStatic, isVirtual, isPureVirtual
+        name, parameters, returnType, binaryName, isDefined, isVararg, owner, isStatic, isVirtual, isPureVirtual, isConst
 ) {
     override val cxxContainer: CxxContainer? = null
 }
@@ -1212,9 +1212,10 @@ internal class NativeIndexImpl(val library: NativeLibrary, val verbose: Boolean 
         val isStatic = clang_CXXMethod_isStatic(cursor) != 0
         val isVirtual = clang_CXXMethod_isVirtual(cursor) != 0
         val isPureVirtual = clang_CXXMethod_isPureVirtual(cursor) != 0
+        val isConst = clang_CXXMethod_isConst(cursor) != 0
 
         return CxxClassFunctionDeclImpl(name, parameters, returnType, getLocation(cursor),
-                                        binaryName, isDefined, isVararg, owner, isStatic, isVirtual, isPureVirtual)
+                                        binaryName, isDefined, isVararg, owner, isStatic, isVirtual, isPureVirtual, isConst)
     }
 
     private fun getCxxClassConstructor(cursor: CValue<CXCursor>, owner: CxxClassDecl): CxxClassConstructorDecl {

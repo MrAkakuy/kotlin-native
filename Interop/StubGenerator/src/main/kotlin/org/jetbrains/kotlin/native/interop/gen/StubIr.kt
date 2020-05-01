@@ -104,6 +104,8 @@ sealed class StubOrigin {
 
         class CxxClassReinterpretCPointer(val classDecl: CxxClassDecl, val classifier: Classifier) : Synthetic()
 
+        class CxxClassConstCast(val classDecl: CxxClassDecl, val classifier: Classifier) : Synthetic()
+
         /**
          * CEnum.Companion.byValue.
          */
@@ -219,6 +221,9 @@ sealed class AnnotationStub(val classifier: Classifier) {
 
         class VarType(val size: Long, val align: Int) : AnnotationStub(cStructClassifier.nested("VarType"))
     }
+
+    class CxxConstInterface(val className: String) :
+            AnnotationStub(Classifier.topLevel(cinteropInternalPackage, "CxxConstInterface"))
 
     class CNaturalStruct(val members: List<StructMember>) :
             AnnotationStub(Classifier.topLevel(cinteropPackage, "CNaturalStruct"))

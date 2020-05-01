@@ -24,6 +24,7 @@ internal class StubIrUniqIdProvider(private val context: ManglingContext) {
             is StubOrigin.Synthetic.EnumByValue -> "${function.origin.enum.uniqueSymbolName}#ByValue"
             is StubOrigin.Synthetic.CxxClassReinterpretNativePointed -> "${function.origin.classDecl.uniqueSymbolName}#InterpretPointed"
             is StubOrigin.Synthetic.CxxClassReinterpretCPointer -> "${function.origin.classDecl.uniqueSymbolName}#InterpretPointer"
+            is StubOrigin.Synthetic.CxxClassConstCast -> "${function.origin.classDecl.uniqueSymbolName}#ConstCast"
             else -> error("Unexpected origin ${function.origin} for function ${function.name}.")
         }.toUniqId()
     }

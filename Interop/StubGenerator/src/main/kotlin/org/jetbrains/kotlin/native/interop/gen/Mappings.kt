@@ -242,7 +242,7 @@ sealed class TypeInfo {
     }
 
     class CxxClassLValueRef(val pointee: KotlinType, val cPointee: Type) : TypeInfo() {
-        override fun argToBridged(expr: String) = "$expr.rawPtr"
+        override fun argToBridged(expr: String) = "($expr as ${pointee.classifier.fqName}).rawPtr"
 
         override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
                 "${pointee.render(scope)}(interpretPointed<CStructVar>($expr))"
@@ -525,11 +525,15 @@ fun mirror(declarationMapper: DeclarationMapper, type: Type): TypeMirror = when 
     is CxxClassLValueRefType -> {
         val pointeeType = type.pointeeType
         val pointeeMirror = mirror(declarationMapper, pointeeType)
+        val pointedType = if (type.pointeeIsConst)
+            Classifier.topLevel(pointeeMirror.pointedType.classifier.pkg, "I${pointeeMirror.pointedType.classifier.topLevelName}Const").type
+        else
+            pointeeMirror.pointedType
         val info = TypeInfo.CxxClassLValueRef(pointeeMirror.pointedType, pointeeType)
         TypeMirror.ByValue(
-                pointeeMirror.pointedType,
+                pointedType,
                 info,
-                pointeeMirror.pointedType,
+                pointedType,
                 false
         )
     }

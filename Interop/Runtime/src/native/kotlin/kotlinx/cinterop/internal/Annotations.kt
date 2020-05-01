@@ -95,3 +95,7 @@ public annotation class CEnumEntryAlias(val entryName: String)
 @Target(AnnotationTarget.CLASS)
 @Retention(AnnotationRetention.BINARY)
 public annotation class CEnumVarTypeSize(val size: Int)
+
+@Target(AnnotationTarget.CLASS)
+@Retention(AnnotationRetention.BINARY)
+public annotation class CxxConstInterface(val className: String)

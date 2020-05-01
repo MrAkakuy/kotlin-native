@@ -273,7 +273,7 @@ abstract class FunctionDecl(val name: String, val parameters: List<Parameter>, v
 abstract class CxxClassFunctionDecl(
         name: String, parameters: List<Parameter>, returnType: Type, binaryName: String, isDefined: Boolean,
         isVararg: Boolean, val owner: CxxClassDecl, val isStatic: Boolean = false,
-        val isVirtual: Boolean = false, val isPureVirtual: Boolean = false
+        val isVirtual: Boolean = false, val isPureVirtual: Boolean = false, val isConst: Boolean = false
 ) : FunctionDecl(name, parameters, returnType, binaryName, isDefined, isVararg)
 
 /**

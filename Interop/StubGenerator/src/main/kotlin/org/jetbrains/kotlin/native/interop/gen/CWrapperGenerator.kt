@@ -55,7 +55,7 @@ internal class CWrappersGenerator(private val context: StubIrContext) {
                 val originParameters = if (owner != null && !function.isStatic)
                     listOf(Parameter(
                             "ptr",
-                            PointerType(VoidType, false),//CxxClassPointerType(CxxClassType(owner)),
+                            CxxClassPointerType(CxxClassType(owner)),
                             false)
                     ) + function.parameters
                 else
@@ -64,20 +64,29 @@ internal class CWrappersGenerator(private val context: StubIrContext) {
                 val parameters = originParameters.mapIndexed { index, parameter ->
                     Parameter(parameter.type.getStringRepresentation(), "p$index")
                 }
+                val callExpressionParameters = originParameters.mapIndexed { index, parameter ->
+                    when (parameter.type) {
+                        is CxxClassType, is CxxClassLValueRefType -> "*p$index"
+                        else -> "p$index"
+                    }
+                }
 
                 val callExpression = when {
                     owner != null -> {
                         if (function.isStatic)
-                            "${owner.spelling}::${function.name}(${parameters.joinToString { it.name }});"
+                            "${owner.spelling}::${function.name}(${callExpressionParameters.joinToString()})"
                         else
-                            "((${owner.spelling} *) ${parameters.first().name})->${function.name}(${parameters.drop(1).joinToString { it.name }});"
+                            "((${owner.spelling} *) ${callExpressionParameters.first()})->${function.name}(${callExpressionParameters.drop(1).joinToString()})"
                     }
-                    else -> "${function.name}(${parameters.joinToString { it.name }});"
+                    else -> "${function.name}(${callExpressionParameters.joinToString()})"
                 }
                 val wrapperBody = if (function.returnType.unwrapTypedefs() is VoidType) {
-                    callExpression
+                    "$callExpression;"
                 } else {
-                    "return $callExpression"
+                    if (function.returnType is CxxClassLValueRefType || function.returnType is CxxClassType || function.returnType is LValueRefType)
+                        "return &($callExpression);"
+                    else
+                        "return $callExpression;"
                 }
                 val wrapper = createWrapper(symbolName, wrapperName, returnType, parameters, wrapperBody)
                 CCalleeWrapper(wrapper)

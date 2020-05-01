@@ -843,6 +843,11 @@ private fun KotlinStubs.mapType(
         CxxClassValuePassing(type.classOrNull!!.owner)
     }
 
+    type.classOrNull?.owner?.hasAnnotation(RuntimeNames.cxxConstInterface) == true -> {
+        // TODO: transform into class
+        CxxClassValuePassing(type.classOrNull!!.owner)
+    }
+
     type.isFunction() -> if (variadic){
         reportUnsupportedType("not supported as variadic argument")
     } else {
