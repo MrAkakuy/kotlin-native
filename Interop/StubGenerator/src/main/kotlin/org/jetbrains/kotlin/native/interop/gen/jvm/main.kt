@@ -247,7 +247,11 @@ private fun processCLib(flavorName: String, cinteropArguments: CInteropArguments
             warn("Metadata mode isn't supported for Kotlin/JVM! Falling back to sourcecode.")
             GenerationMode.SOURCE_CODE
         } else {
-            providedMode
+            // TODO: C++ metadata generation isn't supported yet
+            if (language == Language.CPP)
+                GenerationMode.SOURCE_CODE
+            else
+                providedMode
         }
     }
 
