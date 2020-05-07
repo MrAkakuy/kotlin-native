@@ -226,6 +226,23 @@ sealed class TypeInfo {
         override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = throw NotImplementedError("LValue Var")
     }
 
+    class RValueRef(val pointee: KotlinType, val cPointee: Type) : TypeInfo() {
+        override fun argToBridged(expr: String) = "$expr.value.rawPtr"
+
+        override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
+                "interpretPointed<${pointee.render(scope)}>($expr).move()"
+
+        override val bridgedType: BridgedType
+            get() = BridgedType.NATIVE_PTR
+
+        override fun cFromBridged(expr: NativeExpression, scope: NativeScope, nativeBacked: NativeBacked) =
+                "std::move(*(${getPointerTypeStringRepresentation(cPointee)})$expr)"
+
+        override fun cToBridged(expr: NativeExpression) = "&($expr)"
+
+        override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = throw NotImplementedError("RValue Var")
+    }
+
     class CxxClassPointer(val pointee: KotlinType, val cPointee: Type) : TypeInfo() {
         override fun argToBridged(expr: String) = "$expr.rawValue"
 
@@ -256,6 +273,23 @@ sealed class TypeInfo {
         override fun cToBridged(expr: NativeExpression) = "&($expr)"
 
         override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = throw NotImplementedError("LValue Var")
+    }
+
+    class CxxClassRValueRef(val pointee: KotlinType, val cPointee: Type) : TypeInfo() {
+        override fun argToBridged(expr: String) = "$expr.value.rawPtr"
+
+        override fun argFromBridged(expr: KotlinExpression, scope: KotlinScope, nativeBacked: NativeBacked) =
+                "${pointee.render(scope)}(interpretPointed<CStructVar>($expr)).move()"
+
+        override val bridgedType: BridgedType
+            get() = BridgedType.NATIVE_PTR
+
+        override fun cFromBridged(expr: NativeExpression, scope: NativeScope, nativeBacked: NativeBacked) =
+                "std::move(*(${getPointerTypeStringRepresentation(cPointee)})$expr)"
+
+        override fun cToBridged(expr: NativeExpression) = "&($expr)"
+
+        override fun constructPointedType(valueType: KotlinType): KotlinClassifierType = throw NotImplementedError("RValue Var")
     }
 
     class ObjCPointerInfo(val kotlinType: KotlinType, val type: ObjCPointer) : TypeInfo() {
@@ -511,6 +545,18 @@ fun mirror(declarationMapper: DeclarationMapper, type: Type): TypeMirror = when 
         )
     }
 
+    is RValueRefType -> {
+        val pointeeType = type.pointeeType
+        val pointeeMirror = mirror(declarationMapper, pointeeType)
+        val info = TypeInfo.RValueRef(pointeeMirror.pointedType, pointeeType)
+        TypeMirror.ByValue(
+                KotlinTypes.moveRef.typeWith(pointeeMirror.pointedType),
+                info,
+                KotlinTypes.moveRef.typeWith(pointeeMirror.pointedType),
+                false
+        )
+    }
+
     is CxxClassPointerType -> {
         val pointeeType = type.pointeeType
         val pointeeMirror = mirror(declarationMapper, pointeeType)
@@ -534,6 +580,22 @@ fun mirror(declarationMapper: DeclarationMapper, type: Type): TypeMirror = when 
                 pointedType,
                 info,
                 pointedType,
+                false
+        )
+    }
+
+    is CxxClassRValueRefType -> {
+        val pointeeType = type.pointeeType
+        val pointeeMirror = mirror(declarationMapper, pointeeType)
+        val pointedType = if (type.pointeeIsConst)
+            Classifier.topLevel(pointeeMirror.pointedType.classifier.pkg, "I${pointeeMirror.pointedType.classifier.topLevelName}Const").type
+        else
+            pointeeMirror.pointedType
+        val info = TypeInfo.CxxClassRValueRef(pointeeMirror.pointedType, pointeeType)
+        TypeMirror.ByValue(
+                KotlinTypes.moveRef.typeWith(pointedType),
+                info,
+                KotlinTypes.moveRef.typeWith(pointedType),
                 false
         )
     }

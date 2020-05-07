@@ -72,8 +72,10 @@ fun Type.getStringRepresentation(): String = when (this) {
     is ArrayType -> getPointerTypeStringRepresentation(this.elemType, this is ConstArrayType)
     is CxxClassPointerType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
     is CxxClassLValueRefType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
+    is CxxClassRValueRefType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
 
     is LValueRefType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
+    is RValueRefType -> getPointerTypeStringRepresentation(this.pointeeType, this.pointeeIsConst)
 
     is RecordType -> this.decl.spelling
     is CxxClassType -> this.decl.spelling

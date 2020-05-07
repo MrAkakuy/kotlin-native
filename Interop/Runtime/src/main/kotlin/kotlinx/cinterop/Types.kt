@@ -301,6 +301,10 @@ public abstract class CxxClass(public var body: CStructVar, context: NativePlace
 public val CxxClass?.rawPtr: NativePtr
     get() = if (this != null) this.rawPtr else nativeNullPtr
 
+public class MoveRef<T>(public val value: T)
+
+public fun <T> T.move(): MoveRef<T> = MoveRef<T>(this)
+
 // generics below are used for typedef support
 // these classes are not supposed to be used directly, instead the typealiases are provided.
 

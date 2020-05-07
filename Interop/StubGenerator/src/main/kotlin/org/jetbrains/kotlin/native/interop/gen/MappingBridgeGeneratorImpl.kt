@@ -101,7 +101,7 @@ class MappingBridgeGeneratorImpl(
                     out("memcpy(${bridgeNativeValues.last()}, &$kniStructResult, sizeof($kniStructResult));")
                     ""
                 }
-                is LValueRefType -> {
+                is LValueRefType, is RValueRefType -> {
                     "&($nativeResult)"
                 }
                 is CxxClassType -> {
@@ -111,7 +111,7 @@ class MappingBridgeGeneratorImpl(
                     out("memcpy(${bridgeNativeValues.last()}, &$kniStructResult, sizeof($kniStructResult));")
                     ""
                 }
-                is CxxClassLValueRefType -> {
+                is CxxClassLValueRefType, is CxxClassRValueRefType -> {
                     "&($nativeResult)"
                 }
                 else -> {

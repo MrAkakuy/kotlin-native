@@ -210,6 +210,8 @@ object KotlinTypes {
     val cArrayPointerVar by InteropClassifier
     val cPointerVarOf by InteropClassifier
 
+    val moveRef by InteropClassifier
+
     val cFunction by InteropClassifier
 
     val objCObjectVar by InteropClassifier

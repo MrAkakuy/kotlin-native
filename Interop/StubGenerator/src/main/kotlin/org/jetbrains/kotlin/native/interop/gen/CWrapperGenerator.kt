@@ -66,7 +66,11 @@ internal class CWrappersGenerator(private val context: StubIrContext) {
                 }
                 val callExpressionParameters = originParameters.mapIndexed { index, parameter ->
                     when (parameter.type) {
-                        is CxxClassType, is CxxClassLValueRefType -> "*p$index"
+                        is CxxClassType,
+                        is LValueRefType,
+                        is CxxClassLValueRefType,
+                        is RValueRefType,
+                        is CxxClassRValueRefType -> "*p$index"
                         else -> "p$index"
                     }
                 }
@@ -83,10 +87,14 @@ internal class CWrappersGenerator(private val context: StubIrContext) {
                 val wrapperBody = if (function.returnType.unwrapTypedefs() is VoidType) {
                     "$callExpression;"
                 } else {
-                    if (function.returnType is CxxClassLValueRefType || function.returnType is CxxClassType || function.returnType is LValueRefType)
-                        "return &($callExpression);"
-                    else
-                        "return $callExpression;"
+                    when (function.returnType) {
+                        is CxxClassType,
+                        is LValueRefType,
+                        is CxxClassLValueRefType,
+                        is RValueRefType,
+                        is CxxClassRValueRefType -> "return &($callExpression);"
+                        else -> "return $callExpression;"
+                    }
                 }
                 val wrapper = createWrapper(symbolName, wrapperName, returnType, parameters, wrapperBody)
                 CCalleeWrapper(wrapper)

@@ -339,11 +339,15 @@ data class PointerType(val pointeeType: Type, val pointeeIsConst: Boolean = fals
 
 data class LValueRefType(val pointeeType: Type, val pointeeIsConst: Boolean = false) : Type
 
+data class RValueRefType(val pointeeType: Type, val pointeeIsConst: Boolean = false) : Type
+
 data class CxxClassType(val decl: CxxClassDecl) : Type
 
 data class CxxClassPointerType(val pointeeType: CxxClassType, val pointeeIsConst: Boolean = false) : Type
 
 data class CxxClassLValueRefType(val pointeeType: CxxClassType, val pointeeIsConst: Boolean = false) : Type
+
+data class CxxClassRValueRefType(val pointeeType: CxxClassType, val pointeeIsConst: Boolean = false) : Type
 // TODO: refactor type representation and support type modifiers more generally.
 
 data class FunctionType(val parameterTypes: List<Type>, val returnType: Type) : Type
